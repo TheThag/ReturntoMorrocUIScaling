@@ -109,6 +109,9 @@ static int owner_fit_connected(OwnerWindowState* st) {
 }
 /* The capture/drag baseline has no native tooltip controller. */
 static int owner_is_transient_tooltip(DWORD obj) { return obj==1; }
+static void owner_popup_trace_first(OwnerWindowState* st) { (void)st; }
+static int owner_is_buff_tooltip(DWORD obj) { (void)obj; return 0; }
+static void owner_buff_popup_offset(OwnerWindowState* st,LONG x,LONG y,LONG w) { (void)st; (void)x; (void)y; (void)w; }
 /* This drag fixture supplies no published owner-hit region. */
 static void owner_popup_offset(OwnerWindowState* st,LONG x,LONG y,float* dx,float* dy) {
     (void)st; (void)x; (void)y; (void)dx; (void)dy;

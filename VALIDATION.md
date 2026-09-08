@@ -1,87 +1,91 @@
-# Phase 3C validation
+# Phase 3D validation
 
-The user confirmed Phase 3B's health-bar and character-name alignment. They also
-reported that buff explanation text was outside its box, and that F2 switched
-to the desktop settings window and left the game stuck after Apply/Save.
-Phase 3C addresses those two reports on `fix/in-game-settings-buff-tooltip`.
-Public `main` remains Phase 2Z. The new focused in-game check is pending.
+The user confirmed that Phase 3C's in-game settings menu works perfectly.
+The remaining reports are an inventory tooltip flashing at native size on
+window entry, and buff explanations appearing above their icons.
+This build is on `fix/tooltip-entry-and-buff-placement`; the public main branch
+remains Phase 2Z. The focused tooltip check is pending.
 
 ## Artifact identity
 
-The DLL is 195072 bytes, PE32/i386, with exactly 185 WinMM exports and no
-static imports, IAT or delay imports. All 15 host harnesses passed.
+The DLL is 204800 bytes, PE32/i386, with exactly 185 WinMM exports and no
+static imports, IAT or delay imports.
 
 | Artifact | SHA256 |
 | --- | --- |
-| `winmm.dll` | `d81890b5c1ac6510afb627b47a5e95f4cd5693f965986a3363157cbc04fe3537` |
-| `prm-ui-fix.ini` | `8f1de12782d8a1579f97cece702bf3d361a262014918afbbe04ba7fa1e5a5c36` |
+| `winmm.dll` | `9108e45db455e1344acf8abaa7378473463f399aba28b09029fe1c61d435a9ca` |
+| Supplied `prm-ui-fix.ini` | `8f1de12782d8a1579f97cece702bf3d361a262014918afbbe04ba7fa1e5a5c36` |
 
-The target PRM.exe remains unchanged, with SHA256
+The original PRM.exe remains unchanged, SHA256
 `5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b`.
-The supplied INI uses 3440×1440, the user's requested 150%, native smoothing,
-and unchanged font metrics, with KeepOnScreen enabled.
+The supplied configuration remains 150%. Installation replaces only the DLL
+and preserves the user's live INI, currently 200% with native smoothing and
+KeepOnScreen enabled. The accepted `ui_settings.h` is unchanged.
 
-## Changes and evidence
+## Buff placement
 
-The translucent tooltip background is drawn before its cached text bitmap.
-UITransBalloonText's virtual +18 method at 4E42A0 returns a background rectangle
-and true; the manager calls cdecl 492660 at 60B9E8. That rectangle previously
-escaped bitmap ownership and used the geometry fallback while the text used its
-window's transform. A narrow wrapper now carries the manager's EDI owner into
-whole-window preparation for the rectangle. The existing rectangle queue freezes
-the transform, just as it does for text tiles. The enclosing scope and native
-arguments are preserved. This covers all admitted windows using that manager
-background path, including buff explanations. Actor/name/gauge anchor policies
-are unchanged.
+The native hover call at VA 741A30 invokes 75BF60 with the scene object and
+mouse coordinates. That routine owns a separate UITransBalloonText at scene
++5E8; it does not use the ordinary tooltip controller's +1C popup. It computes
+x = viewportWidth - 48 - column*45 - popupWidth, and y = 171 + row*35 before
+screen clipping. The logged rectangle (3246,171,146,106) at width 3440 matches
+that formula exactly.
 
-F2 now draws settings into the game frame using DirectDraw GetDC/ReleaseDC and
-GDI. A subclass on the existing game window queues keyboard commands; the
-present thread owns the draft and commits changes after any drag ends. There
-is no separate settings window, message thread, focus change, or display-mode
-change. Enter applies; S saves and closes; F2/Esc closes. Save writes only the
-four UI settings. Rendering failure closes the panel and releases input.
+A wrapper observes this exact producer and retains the scene and popup vtables.
+Every use revalidates both identities and the scene's live +5E8 link. Only that
+popup follows the buff HUD attachment; actor speech retains bottom-center
+placement. The popup's native right/top attachment passes through the HUD
+transform before its bitmap is enlarged. Background and text receive the same
+transform. Oversized explanations still fit inside the screen. Fixed-origin
+and centered anchor modes retain their configured origin.
 
-The initial incident snapshot had no apply/save completion and still specified
-200%. A later capture, taken after detecting an INI change during packaging,
-records both Apply and Save completing at 150%, with KeepOnScreen enabled.
-The later file is preserved. The reported desktop switch and stuck presentation
-support removing the external focus-taking panel; these captures do not establish
-the exact Wine/DirectDraw focus-loss internals or current visual game state.
+## First-appearance ownership
 
-## Local verification
+The owner table previously stopped admitting objects permanently after 512
+identities. A new tooltip could then use the geometry fallback, which can show
+its first frame at native size before a group exists. The table now reclaims
+its oldest stale, inactive record. A complete manager snapshot, recent drawing
+and input activity, current scopes, capture and the selected hit owner protect
+live records. An unreadable or incomplete manager walk blocks reclamation.
+The manager is walked once per reclamation attempt, and no window positions
+or input transforms are changed by reclamation.
 
-- The background fixture exercises actual scope preparation, bitmap ownership
-  and vertex scaling with native-sized fake objects, including first draw,
-  queued background/text agreement, nested scopes and unknown-owner forwarding.
-- `test_thunks.py` executes the production assembly on i386: both bitmap
-  continuations, the background's EDI owner, five cdecl arguments, return value,
-  native caller cleanup and preserved registers.
-- `test_settings.py` exercises the actual header and core Apply/Save functions
-  with the i386 stdcall ABI, keyboard routing, deferred opening/commit during
-  capture, settings persistence, DC cleanup and draw failures.
-- `test_present.py` exercises Blt/BltFast/Flip target selection, original argument
-  and return forwarding, drawing before presentation, reverse/offscreen copy
-  exclusions and COM reference handling.
-- Existing ownership, hit selection, captured-child input, bounds, connected
-  Basic Info/Menu, cursor, world input, drag, filtering, map and minimap tests
-  retain their coverage. The bounds fixture covers 125/133/150/175/200% and
-  720/1080/1440-high screens.
-- `verify_hooks.py` checks 20 direct callsites, two bitmap patch spans, one input
-  patch span, offscreen and mouse return sites, plus native layout evidence.
-  Only the new manager background call is added to the PRM patch set.
+This is a proven capacity defect, but the available runtime log does not prove
+it caused the user's inventory flash. The inventory's native tooltip factory
+already reaches the owned bitmap path. Bounded first-appearance log entries
+now report popup identity, dimensions, selected source, scale, native-size
+policy, and buff classification. They include reentry after a popup disappears.
+F8 also reports owner-table size, reclaimed records and blocked admissions.
+A visual result is needed to confirm whether the reported flash is resolved.
 
-These host fixtures use fake Windows/COM services and do not launch the game.
-The PE32/i386 DLL retains 185 WinMM exports and dynamic API loading. The export
-definition, forwarder assembly and build script are unchanged.
+## Verification
+
+All 17 host harnesses passed, including the new owner-lifetime and buff tests.
+They exercise extracted production functions with fake native/Windows services;
+they do not launch the game.
+
+- Owner lifetime: actual 512-entry pressure, repeated transient tooltip churn,
+  oldest activity selection, manager/current/capture/input protections,
+  unreadable manager nodes, full-table blocking and vtable reuse under i386
+  ASan/UBSan.
+- Buff tooltip: exact scene/popup identity, native thiscall forwarding, queued
+  background/text transforms at 150% and 200%, plus unrelated speech behavior.
+- Existing bitmap, background, bounds, hit selection, capture, connected Basic
+  Info/Menu, drag, cursor, world input, map, minimap, filtering, settings,
+  presentation and assembly checks retain their coverage.
+- `verify_hooks.py`: 21 direct callsites, two bitmap spans, one input span,
+  offscreen/mouse returns and native layout evidence. The only added native
+  patch is the buff hover call.
+- PE artifact check: exact WinMM export set, architecture and absent imports.
+- The Phase 3D auditor passes synthetic latest-run, missing-snapshot, old-run
+  and blocked-admission checks; it cannot determine visual tooltip alignment.
 
 ## Pending in-game check
 
-Fully exit the stuck game and restart to load Phase 3C. Check a buff explanation
-at the displayed icon, then switch buffs and return. Open F2, adjust the scale
-with Left/Right, apply with Enter, save and close with S, and reopen/close with
-F2 or Esc. Confirm the game remains visible and movement/clicks resume. Press
-F8 after the combined check. The new bounds auditor reads Phase 3C snapshots;
-it cannot determine visual tooltip alignment or fullscreen focus behavior.
-Previous DLLs and configurations are preserved in the project archives and
-evidence folder; development backups and reports do not belong in the game
-installation.
+Restart the game to load Phase 3D. Hover an inventory item immediately after
+entering the inventory, leave the entire window, and repeat. Check a buff
+explanation beside its icon, then another buff and return. Press F8 afterward.
+The first-appearance samples are automatic; no split-second capture is needed.
+The user has already accepted F2, so this check focuses on the two tooltips.
+Runtime files alone belong in the game folder. Archives and test evidence stay
+in the project. Stop after handing over this build and await the user's result.

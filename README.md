@@ -3,7 +3,7 @@
 A 32-bit WinMM proxy that enlarges Return to Morroc's interface while keeping
 window contents, mouse interaction and character movement aligned.
 
-The current test build is **Phase 3C**. It includes complete-window scaling, topmost
+The current test build is **Phase 3D**. It includes complete-window scaling, topmost
 window input, dragging, attached NPC descriptions, player chat-room titles,
 character hover names, fullscreen map region previews and the compact minimap.
 The game executable is left unchanged on disk.
@@ -53,12 +53,17 @@ window. The player HP/SP gauge also receives ownership and uses its live center
 on every frame, fixing the stale group position that could make it drift during
 movement. The user confirmed the corrected health-bar and character-name alignment.
 
-Phase 3B's external settings window switched to the desktop and left the game
-apparently stuck; its 150% save completed later. Phase 3C replaces that panel
-with the in-game version.
-It also gives separately drawn translucent tooltip boxes the same window
-transform as their text. The focused F2 and buff-tooltip check is pending on
-`fix/in-game-settings-buff-tooltip`; published `main` remains Phase 2Z.
+The user confirmed Phase 3C's in-game F2 settings menu works correctly.
+Phase 3D identifies buff explanations through their native scene controller,
+so their box and text grow to the left of the scaled buff icons. Actor speech
+keeps its own attachment rule.
+
+Old, inactive window records can now be reclaimed when the ownership table
+fills. This closes a path where a new tooltip could initially fall back to its
+native size. The reported inventory-entry flash still needs visual confirmation;
+first-appearance diagnostics now capture information a later F8 snapshot misses.
+The focused tooltip check is pending on `fix/tooltip-entry-and-buff-placement`;
+published `main` remains Phase 2Z.
 
 ## Compatibility
 
@@ -169,7 +174,7 @@ argument forwarding. They do not launch the game.
 For a runtime report, press F8 in-game and inspect the generated log:
 
 ```sh
-python3 audit_phase3c.py /path/to/prm-ui-fix.log
+python3 audit_phase3d.py /path/to/prm-ui-fix.log
 ```
 
 The auditor reports missing samples as REVIEW. A successful diagnostic audit

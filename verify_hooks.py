@@ -16,6 +16,7 @@ import sys
 HOOKS = (
     ("UI event hit query", "PRM_UI_HIT_EVENT", 0x001F862C, 0x001FA1A0),
     ("UI mouse hit query", "PRM_UI_HIT_MOUSE", 0x00209FCE, 0x001FA1A0),
+    ("Buff hover update", "PRM_BUFF_HOVER", 0x00341A30, 0x0035BF60),
     ("World ray", "PRM_WORLD_RAY", 0x00334568, 0x000A1540),
     ("Cursor draw", "PRM_CURSOR_DRAW", 0x00227B7B, 0x00227BC0),
     ("Sprite submit", "PRM_SPRITE_SUBMIT", 0x00227FD9, 0x000A0550),
@@ -102,6 +103,20 @@ POPUP_LAYOUT = (
     (0x0019F9AB, bytes.fromhex("e8 d0 53 05 00")),
     (0x002284E2, bytes.fromhex("89 47 1c")),
     (0x0019F9B8, bytes.fromhex("68 70 fe ff ff 68 70 fe ff ff")),
+)
+
+# The status/buff hover routine owns a UITransBalloonText at scene +0x5E8.
+# These short spans pin its construction, scene storage, right/top placement,
+# and stdcall cleanup without making the class-wide UITransBalloonText policy
+# part of the hook manifest.
+BUFF_POPUP_LAYOUT = (
+    (0x0035C276, bytes.fromhex("e8 75 0a d8 ff")),
+    (0x0035C289, bytes.fromhex("89 83 e8 05 00 00")),
+    (0x0035C6F5, bytes.fromhex("6b c0 2d 6b d2 23")),
+    (0x0035C705, bytes.fromhex("2b 4b 14")),
+    (0x0035C716, bytes.fromhex("8d b2 ab 00 00 00")),
+    (0x0035C740, bytes.fromhex("ff 53 10")),
+    (0x0035C8A3, bytes.fromhex("c2 08 00")),
 )
 
 PLAYER_GAUGE_LAYOUT = (
@@ -255,6 +270,13 @@ def main():
         except ValueError as error:
             failures.append(str(error))
     print("Transient explanation and character-info popup native ownership checked")
+    for rva, expected in BUFF_POPUP_LAYOUT:
+        try:
+            if pe.read_code(rva, len(expected)) != expected:
+                raise ValueError(f"buff popup +0x5E8 construction/placement differs at RVA 0x{rva:08X}")
+        except ValueError as error:
+            failures.append(str(error))
+    print("Buff hover popup +0x5E8 construction, right/top placement, and ret 8 checked")
     for rva, expected in PLAYER_GAUGE_LAYOUT:
         try:
             if pe.read_code(rva, len(expected)) != expected:

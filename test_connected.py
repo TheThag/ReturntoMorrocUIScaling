@@ -90,6 +90,9 @@ STUBS = r'''
 #define FAKE_EXE_SIZE (0xAB76D8UL + 0x500UL)
 #define MANAGER_RVA 0xAB76D8UL
 
+static void owner_popup_trace_first(OwnerWindowState* st) { (void)st; }
+static int owner_is_buff_tooltip(DWORD obj) { (void)obj; return 0; }
+static void owner_buff_popup_offset(OwnerWindowState* st,LONG x,LONG y,LONG w) { (void)st; (void)x; (void)y; (void)w; }
 static DWORD g_ui_present_serial;
 static int g_owner_scale_enabled;
 static int g_owner_submit_enabled;

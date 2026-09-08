@@ -109,6 +109,9 @@ static OwnerWindowState* owner_state_for(DWORD obj,int create) {
     }
     return st->object_ptr?st:0;
 }
+static void owner_popup_trace_first(OwnerWindowState* st) { (void)st; }
+static int owner_is_buff_tooltip(DWORD obj) { (void)obj; return 0; }
+static void owner_buff_popup_offset(OwnerWindowState* st,LONG x,LONG y,LONG w) { (void)st; (void)x; (void)y; (void)w; }
 static int owner_fit_connected(OwnerWindowState* st) {
     (void)st; /* Basic/Menu native relation is covered by its native fixture. */
     return 0;

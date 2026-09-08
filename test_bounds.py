@@ -63,6 +63,9 @@ typedef union { DWORD d[4][8]; float f[4][8]; BYTE bytes[128]; } Quad;
 
 
 STUBS = r'''
+static void owner_popup_trace_first(OwnerWindowState* st) { (void)st; }
+static int owner_is_buff_tooltip(DWORD obj) { (void)obj; return 0; }
+static void owner_buff_popup_offset(OwnerWindowState* st,LONG x,LONG y,LONG w) { (void)st; (void)x; (void)y; (void)w; }
 static DWORD g_ui_present_serial,g_owner_input_order;
 static int g_owner_submit_enabled,g_owner_scale_enabled,g_owner_tooltip_enabled;
 static int g_ui_enabled,g_ui_runtime_enabled,g_ui_scale_global,g_ui_scale_unmatched;
