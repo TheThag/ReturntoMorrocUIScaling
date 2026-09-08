@@ -50,10 +50,10 @@ types += "\n" + "\n".join(constant(name) for name in (
 production = "\n".join(function(name) for name in (
     "f_abs", "fvf_stride", "ui_scale_factor", "rect_is_global", "choose_group_anchor",
     "owner_class_is_hover_popup", "owner_class_is_world_label", "owner_class_is_world_title", "owner_class_is_world_name", "owner_class_should_hook",
-    "owner_input_touch_state", "owner_bitmap_prepare",
+    "owner_input_touch_state", "owner_fit_rect", "owner_bitmap_prepare",
     "owner_bitmap_draw_c", "owner_bitmap_registry_lock", "owner_bitmap_registry_unlock",
     "owner_bitmap_bucket", "owner_bitmap_forget", "owner_bitmap_note_vertices",
-    "owner_bitmap_consume_vertices", "looks_like_ui_vertices", "make_scaled_ui_vertices",
+    "owner_bitmap_consume_transform", "owner_bitmap_consume_vertices", "looks_like_ui_vertices", "make_scaled_ui_vertices",
     "clear_ui_frame_accumulator", "hook_SurfaceBltFast",
 ))
 
@@ -80,6 +80,7 @@ typedef struct { void* orig_bltfast; } SurfHookRec;
 static DWORD g_ui_present_serial,g_owner_input_order;
 static int g_owner_submit_enabled,g_owner_scale_enabled,g_owner_tooltip_enabled;
 static int g_ui_enabled,g_ui_runtime_enabled,g_ui_scale_global,g_ui_scale_unmatched;
+static int g_ui_keep_on_screen;
 static LONG g_ui_screen_w,g_ui_screen_h,g_ui_origin_x,g_ui_origin_y;
 static int g_ui_anchor_mode,g_ui_global_threshold_percent,g_ui_scale_percent;
 static DWORD g_owner_tagged_draws,g_ui_scaled_draws;
@@ -107,6 +108,18 @@ static OwnerWindowState* owner_state_for(DWORD obj,int create) {
         strcpy(st->class_name,"UIItemWnd");
     }
     return st->object_ptr?st:0;
+}
+static int owner_fit_connected(OwnerWindowState* st) {
+    (void)st; /* Basic/Menu native relation is covered by its native fixture. */
+    return 0;
+}
+/* No native tooltip controller is present in this bitmap-only fixture.  The
+ * reserved object id keeps the source boundary explicit if a popup is added. */
+static int owner_is_transient_tooltip(DWORD obj) { return obj==1; }
+/* The bitmap baseline intentionally has no mouse-region source.  Keep the
+ * production call explicit while isolating this fixture from hit-selection. */
+static void owner_popup_offset(OwnerWindowState* st,LONG x,LONG y,float* dx,float* dy) {
+    (void)st; (void)x; (void)y; (void)dx; (void)dy;
 }
 static int cursor_consume_vertices(DWORD fvf,const void* v,DWORD n) {
     (void)fvf;(void)v;(void)n; return 0;
@@ -151,6 +164,8 @@ static void reset(void) {
     g_owner_submit_enabled=g_owner_scale_enabled=g_owner_tooltip_enabled=1;
     g_owner_bitmap_hooks_installed=g_ui_enabled=g_ui_runtime_enabled=1;
     g_ui_scale_global=1; g_ui_scale_unmatched=0;
+    /* Existing bitmap tests assert the pre-clamp transform explicitly. */
+    g_ui_keep_on_screen=0;
     g_ui_screen_w=1920; g_ui_screen_h=1080;
     g_ui_origin_x=g_ui_origin_y=0; g_ui_anchor_mode=1;
     g_ui_global_threshold_percent=75; g_ui_scale_percent=133;
@@ -445,7 +460,7 @@ static void hover_names(void) {
     CHECK(!owner_class_is_world_name("UINameBalloonTextOther"));
     CHECK(!owner_class_should_hook("OtherUINameBalloonText"));
     CHECK(!owner_class_should_hook("UIBalloonText"));
-    CHECK(!owner_class_should_hook("UICharInfoBalloonText"));
+    CHECK(owner_class_should_hook("UICharInfoBalloonText"));
     CHECK(!owner_class_is_world_name("CSignBoardWnd"));
     CHECK(!owner_class_is_world_name("UIChatRoomTitle"));
     for(n=0;n<2;++n) {

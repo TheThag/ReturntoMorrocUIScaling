@@ -26,6 +26,30 @@ def extract_type(source, name):
     return match[0]
 
 
+def extract_definition(source, name):
+    """Extract the definition when a same-named forward declaration exists."""
+    candidates = re.finditer(
+        r"^static [^\n]*\b" + re.escape(name) + r"\s*\(", source, re.M)
+    for start in candidates:
+        opening = source.find("{", start.start())
+        if opening < 0 or source.find(";", start.start(), opening) >= 0:
+            continue
+        tokens = re.finditer(
+            r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|'
+            r"'(?:\\.|[^'\\])*'|[{}]",
+            source[opening:], re.S)
+        depth = 0
+        for token in tokens:
+            if token[0] == "{":
+                depth += 1
+            elif token[0] == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start.start():opening + token.end()]
+        raise ValueError(f"unterminated actual source function {name}")
+    raise ValueError(f"missing actual source function {name}")
+
+
 PREFIX = r'''
 #include <assert.h>
 #include <math.h>
@@ -48,6 +72,7 @@ static OwnerBitmapScope g_owner_bitmap_scope;
 static DWORD g_owner_input_region_count,g_owner_capture_link_count;
 static DWORD g_owner_capture_object,g_owner_capture_root,g_ui_present_serial;
 static float g_owner_capture_ax,g_owner_capture_ay;
+static float g_owner_capture_scale,g_owner_capture_offset_x,g_owner_capture_offset_y;
 static int g_owner_capture_native_size;
 static DWORD g_owner_capture_maps,g_owner_capture_changes,g_owner_capture_unknown;
 static DWORD g_owner_mapped_mouse,g_owner_input_candidates,g_owner_input_overlap_hits;
@@ -56,6 +81,7 @@ static DWORD g_owner_input_order,g_owner_bitmap_unsupported;
 static int g_owner_input_remap_enabled=1,g_owner_scale_enabled=1;
 static int g_input_enabled=1,g_input_runtime_enabled=1,g_ui_runtime_enabled=1;
 static int g_owner_bitmap_hooks_installed=1,g_owner_submit_enabled=1,g_owner_tooltip_enabled=1;
+static int g_ui_keep_on_screen;
 static int g_ui_scale_global=0,g_ui_anchor_mode=2,g_ui_global_threshold_percent=65;
 static LONG g_ui_screen_w=3440,g_ui_screen_h=1440,g_ui_origin_x=0,g_ui_origin_y=0;
 static DWORD fake_capture;
@@ -77,6 +103,16 @@ static OwnerWindowState* owner_state_for(DWORD object,int create) {
     g_owner_windows[g_owner_window_count].vtable_ptr=0x50000000UL+g_owner_window_count;
     return &g_owner_windows[g_owner_window_count++];
 }
+static int owner_fit_connected(OwnerWindowState* st) {
+    (void)st; /* This host fixture has no native manager/controller memory. */
+    return 0;
+}
+/* The capture/drag baseline has no native tooltip controller. */
+static int owner_is_transient_tooltip(DWORD obj) { return obj==1; }
+/* This drag fixture supplies no published owner-hit region. */
+static void owner_popup_offset(OwnerWindowState* st,LONG x,LONG y,float* dx,float* dy) {
+    (void)st; (void)x; (void)y; (void)dx; (void)dy;
+}
 '''
 
 
@@ -93,15 +129,19 @@ static void reset(void) {
     g_ui_scale_global=0; g_ui_anchor_mode=2;
     g_owner_input_region_count=g_owner_capture_link_count=0;
     g_owner_capture_object=g_owner_capture_root=0;
+    g_owner_capture_scale=1.25f; g_owner_capture_offset_x=g_owner_capture_offset_y=0.0f;
     g_owner_capture_native_size=0;
     g_owner_capture_maps=g_owner_capture_changes=g_owner_capture_unknown=0;
     g_ui_present_serial=100; fake_capture=0; scale=1.25f;
     g_owner_input_remap_enabled=g_owner_scale_enabled=1;
     g_input_enabled=g_input_runtime_enabled=g_ui_runtime_enabled=1;
+    /* Keep the legacy capture/drag fixtures on the pre-clamp transform. */
+    g_ui_keep_on_screen=0;
 }
 static void region(unsigned int index,DWORD object,DWORD present,float ax,float ay) {
     OwnerInputRegion* r=&g_owner_input_regions[index];
     r->object_ptr=object; r->present=present; r->ax=ax; r->ay=ay;
+    r->fit_scale=scale; r->offset_x=r->offset_y=0.0f;
     r->native_size=0;
     r->rect=(UIRectF){100,100,300,300}; r->input_order=index+1;
     if(g_owner_input_region_count<=index) g_owner_input_region_count=index+1;
@@ -282,6 +322,7 @@ static void publish_prepared(unsigned int index,OwnerWindowState* st) {
     r->ax=st->ax; r->ay=st->ay; r->object_ptr=st->object_ptr;
     r->present=g_ui_present_serial; r->input_order=st->last_input_order;
     r->exact_order=st->last_draw_order; r->native_size=0;
+    r->fit_scale=st->fit_scale; r->offset_x=st->offset_x; r->offset_y=st->offset_y;
     if(g_owner_input_region_count<=index) g_owner_input_region_count=index+1;
 }
 static void test_moving_title_input(void) {
@@ -355,12 +396,17 @@ def main():
     source = args.source.read_text()
     types = "\n".join(extract_type(source, name) for name in (
         "OwnerWindowState", "OwnerInputRegion", "OwnerCaptureLink", "OwnerBitmapScope", "OwnerHitSelection"))
-    functions = "\n".join(extract_function(source, name) for name in (
+    names = (
         "s_len", "s_contains", "s_equal", "owner_class_is_hover_popup",
         "owner_class_is_world_label", "owner_class_is_world_title", "owner_class_is_world_name", "rect_is_global", "choose_group_anchor",
-        "owner_input_touch_state", "owner_bitmap_prepare",
-        "rect_contains_point", "rect_area", "transform_bounds", "owner_input_apply_transform",
-        "owner_input_map_capture", "owner_input_select_region", "remap_owner_point_selected", "remap_owner_point"))
+        "owner_input_touch_state", "owner_fit_rect", "owner_bitmap_prepare",
+        "rect_contains_point", "rect_area", "owner_input_apply_transform",
+        "owner_input_region_bounds", "owner_input_map_region",
+        "owner_input_map_capture", "owner_input_select_region", "remap_owner_point_selected", "remap_owner_point")
+    functions = "\n".join(
+        extract_definition(source, name) if name == "owner_input_select_region"
+        else extract_function(source, name)
+        for name in names)
     with tempfile.TemporaryDirectory(prefix="prm-drag-test-") as directory:
         harness = Path(directory) / "drag.c"
         binary = Path(directory) / "drag-test"

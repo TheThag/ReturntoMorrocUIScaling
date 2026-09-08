@@ -1,5 +1,5 @@
 /*
- * PRM UI FIX - Phase 3A native UI hit ownership
+ * PRM UI FIX - Phase 3B screen bounds for owned UI
  * 32-bit WINMM proxy for Return to Morroc PRM.exe
  *
  * Goals for Phase 2F:
@@ -76,6 +76,7 @@ typedef struct _LOGFONTA {
 #define PAGE_NOACCESS 0x01
 #define PAGE_GUARD 0x100
 #define MEM_COMMIT 0x1000
+#define VK_UI_SETTINGS       0x71 /* F2 */
 #define VK_TRACE_CAPTURE     0x73 /* F4 */
 #define VK_UI_SHARP          0x72 /* F3 */
 #define VK_UI_SCALE          0x74 /* F5 */
@@ -111,6 +112,7 @@ typedef struct _LOGFONTA {
 #define PRM_MINIMAP_QUEUE_TARGET_RVA 0x000A0550UL
 #define PRM_MINIMAP_MARKER_QUEUE_CALL_RVA 0x003325C4UL
 #define PRM_MINIMAP_MARKER_QUEUE_TARGET_RVA 0x000A0550UL
+#define PRM_TOOLTIP_MANAGER_RVA 0x00A78D8CUL
 #define PRM_RECT_QUEUE_CALL_RVA    0x0009277FUL
 #define PRM_RECT_QUEUE_TARGET_RVA  0x000A0550UL
 #define PRM_IMAGE_QUEUE_CALL_RVA   0x00093058UL
@@ -254,6 +256,7 @@ static DWORD g_trace_capture_ms = 2000;
 static int g_ui_enabled = 1;
 static int g_ui_scale_percent = 133;
 static int g_ui_sharp_filter = 0;
+static int g_ui_keep_on_screen = 1;
 static DWORD g_ui_sharp_draws,g_ui_sharp_failures;
 static LONG g_ui_origin_x = 0;
 static LONG g_ui_origin_y = 0;
@@ -948,7 +951,7 @@ static void install_device_hooks(void* obj) {
     e=patch_vtable_slot(vt,31,(void*)hook_DrawPrimitiveVB,&r->orig_draw_vb);
     f=patch_vtable_slot(vt,32,(void*)hook_DrawIndexedPrimitiveVB,&r->orig_draw_indexed_vb);
     g=patch_vtable_slot(vt,35,(void*)hook_SetTexture,&r->orig_set_texture);
-    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 3A owner UI + isolated world input)");
+    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 3B owner UI + isolated world input)");
     else log_line("Direct3DDevice7 hooks: PARTIAL/FAILED");
 }
 
@@ -1377,6 +1380,7 @@ typedef struct {
     int have_input_local_bbox;
     LONG pos_x,pos_y;
     float ax,ay;
+    float fit_scale,offset_x,offset_y;
     UIRectF frame_bbox;
     UIRectF input_local_bbox;
     DWORD last_input_order;
@@ -1406,6 +1410,7 @@ static DWORD g_owner_prev_member_count;
 typedef struct {
     UIRectF rect;
     float ax, ay;
+    float fit_scale,offset_x,offset_y;
     DWORD object_ptr;
     DWORD present;
     DWORD input_order;
@@ -1447,10 +1452,12 @@ typedef struct {
     const void* verts;
     DWORD object_ptr, vtable_ptr, nverts, present;
     float ax,ay;
+    float fit_scale,offset_x,offset_y;
     int native_size;
     DWORD fields[4][6];
 } OwnerBitmapDrawRec;
-typedef struct { DWORD object_ptr,vtable_ptr,thread; float ax,ay; int native_size; } OwnerBitmapScope;
+typedef struct { DWORD object_ptr,vtable_ptr,thread; float ax,ay;
+    float fit_scale,offset_x,offset_y; int native_size; } OwnerBitmapScope;
 static OwnerBitmapDrawRec g_owner_bitmap_draws[MAX_OWNER_BITMAP_DRAWS];
 static OwnerBitmapScope g_owner_bitmap_scope;
 static volatile LONG g_owner_bitmap_lock;
@@ -1472,6 +1479,7 @@ static DWORD g_owner_capture_capacity_limits,g_owner_capture_walk_limits;
 static DWORD g_owner_capture_stale_roots,g_owner_capture_link_peak;
 static DWORD g_owner_capture_object,g_owner_capture_root;
 static float g_owner_capture_ax,g_owner_capture_ay;
+static float g_owner_capture_scale,g_owner_capture_offset_x,g_owner_capture_offset_y;
 static int g_owner_capture_native_size;
 static DWORD g_owner_capture_maps,g_owner_capture_changes,g_owner_capture_unknown;
 
@@ -1532,15 +1540,22 @@ static int s_equal(const char* a, const char* b) {
 
 static int owner_class_is_hover_popup(const char* n) {
     if(!n) return 0;
+    /* The transient explanation factory at VA 628430 registers a real
+       UITransBalloonText. Basic Info also uses UICharInfoBalloonText through
+       VA 59F8D0. Neither class has the usual Wnd suffix. */
     return s_contains(n,"ToolTip") || s_contains(n,"Tooltip") ||
-           s_equal(n,"UISkillDescribeWnd") || s_equal(n,"UIGuildTipWnd");
+           s_equal(n,"UISkillDescribeWnd") || s_equal(n,"UIGuildTipWnd") ||
+           s_equal(n,"UITransBalloonText") || s_equal(n,"UICharInfoBalloonText");
 }
 
 static int owner_class_is_world_label(const char* n) {
     /* C3DCooRendering projects the NPC position and moves this exact window.
        Its finished bitmap uses the normal manager draw. Scale around its live
        center, which the native placement keeps attached to the projection. */
-    return n && s_equal(n,"CSignBoardWnd");
+    /* UIPlayerGage is also a manager-backed window. Scene+2C8 is placed
+       from the player's current projection at VA 742788..280B. Like names,
+       its class lacks Wnd; fallback grouping would retain a stale center. */
+    return n && (s_equal(n,"CSignBoardWnd") || s_equal(n,"UIPlayerGage"));
 }
 
 static int owner_class_is_world_title(const char* n) {
@@ -1560,6 +1575,7 @@ static int owner_class_is_world_name(const char* n) {
  * windows fail this RTTI gate and pass through unchanged. */
 static int owner_class_should_hook(const char* n) {
     if(!n || !n[0]) return 0;
+    if(owner_class_is_hover_popup(n)) return 1;
     if(owner_class_is_world_label(n) || owner_class_is_world_title(n) || owner_class_is_world_name(n)) return 1;
     if(n[0]=='U' && n[1]=='I' && (s_contains(n,"Wnd") || s_contains(n,"Window"))) return 1;
     if(s_contains(n,"EquipWnd") || s_contains(n,"Inventory") || s_contains(n,"Skill")) return 1;
@@ -1586,6 +1602,7 @@ static OwnerWindowState* owner_state_for(DWORD obj, int create) {
     if(!st) st=&g_owner_windows[g_owner_window_count++];
     st->object_ptr=obj; st->vtable_ptr=(DWORD)(ULONG_PTR)vt; st->frame_tag=0; st->last_present=0;
     st->have_anchor=0; st->have_position=0; st->have_input_local_bbox=0; st->pos_x=0; st->pos_y=0; st->ax=0; st->ay=0;
+    st->fit_scale=0; st->offset_x=st->offset_y=0;
     st->frame_bbox.l=st->frame_bbox.t=st->frame_bbox.r=st->frame_bbox.b=0;
     st->input_local_bbox.l=st->input_local_bbox.t=st->input_local_bbox.r=st->input_local_bbox.b=0;
     st->last_input_order=0; st->last_input_present=0; st->last_draw_order=0; st->last_draw_present=0; st->bitmap_present=0;
@@ -2018,6 +2035,131 @@ static void install_cursor_hooks(void) {
     } else log_line("Cursor native hooks: patch failed");
 }
 
+/* Retain the correction after an edge clamp. Recomputing it from zero on each
+ * frame would pin a displaced window to that edge while its native position
+ * moves through the invisible overflow. Capture keeps its initial inverse;
+ * subsequent native drag deltas therefore still move the visible window 1:1. */
+static void owner_fit_rect(const UIRectF* whole, float ax, float ay, float* scale,
+                           float* offset_x, float* offset_y) {
+    float w=whole->r-whole->l,h=whole->b-whole->t;
+    float sw=(float)g_ui_screen_w,sh=(float)g_ui_screen_h,l,t,r,b;
+    if(w<=0.0f || h<=0.0f || sw<=0.0f || sh<=0.0f || *scale<=0.0f) return;
+    if(w*(*scale)>sw) *scale=sw/w;
+    if(h*(*scale)>sh) *scale=sh/h;
+    l=ax+(whole->l-ax)*(*scale)+*offset_x;
+    t=ay+(whole->t-ay)*(*scale)+*offset_y;
+    r=l+w*(*scale); b=t+h*(*scale);
+    if(l<0.0f) *offset_x-=l;
+    else if(r>sw) *offset_x+=sw-r;
+    if(t<0.0f) *offset_y-=t;
+    else if(b>sh) *offset_y+=sh-b;
+}
+
+/* Basic Info and its icon menu are two manager roots, joined by native
+ * controller layout rather than UIWindow parentage. VA 5FF205 selects menu ID
+ * 0x133; ACF730 places it at basic.x, basic.y+basic.height-4. Keep that real
+ * block together without merging unrelated neighboring windows. */
+static DWORD owner_collect_active_objects(DWORD* out, DWORD cap);
+static DWORD g_owner_fit_pair_tag,g_owner_fit_pair_basic,g_owner_fit_pair_menu;
+static DWORD g_owner_fit_pair_basic_vt,g_owner_fit_pair_menu_vt;
+static float g_owner_fit_pair_ax,g_owner_fit_pair_ay,g_owner_fit_pair_scale;
+static float g_owner_fit_pair_dx,g_owner_fit_pair_dy;
+static int owner_fit_connected(OwnerWindowState* st) {
+    DWORD active[512],count,i,basic=0,menu=0; OwnerWindowState *bs=0,*ms=0;
+    UIRectF joined,part; float scale;
+    if(!s_equal(st->class_name,"UIBasicInfoWnd") && !s_equal(st->class_name,"UIMenuIconWnd")) return 0;
+    if(g_owner_fit_pair_tag==g_ui_present_serial+1 &&
+       ((st->object_ptr==g_owner_fit_pair_basic && st->vtable_ptr==g_owner_fit_pair_basic_vt) ||
+        (st->object_ptr==g_owner_fit_pair_menu && st->vtable_ptr==g_owner_fit_pair_menu_vt))) {
+        int have_basic=0,have_menu=0;
+        BYTE* bp=(BYTE*)(ULONG_PTR)g_owner_fit_pair_basic;
+        BYTE* mp=(BYTE*)(ULONG_PTR)g_owner_fit_pair_menu;
+        count=owner_collect_active_objects(active,512);
+        for(i=0;i<count;++i) {
+            if(active[i]==g_owner_fit_pair_basic) have_basic=1;
+            if(active[i]==g_owner_fit_pair_menu) have_menu=1;
+        }
+        if(!have_basic || !have_menu || !mem_readable(bp,0x30) || !mem_readable(mp,0x30) ||
+           *(DWORD*)bp!=g_owner_fit_pair_basic_vt || *(DWORD*)mp!=g_owner_fit_pair_menu_vt ||
+           *(DWORD*)(bp+0x10) || *(DWORD*)(mp+0x10) || !*(DWORD*)(bp+0x28) || !*(DWORD*)(mp+0x28) ||
+           *(DWORD*)(bp+0x2c)!=0 || *(DWORD*)(mp+0x2c)!=0x133) {
+            g_owner_fit_pair_tag=0; return 0;
+        }
+        st->ax=g_owner_fit_pair_ax; st->ay=g_owner_fit_pair_ay; st->have_anchor=1;
+        st->fit_scale=g_owner_fit_pair_scale;
+        st->offset_x=g_owner_fit_pair_dx; st->offset_y=g_owner_fit_pair_dy; return 1;
+    }
+    count=owner_collect_active_objects(active,512);
+    for(i=0;i<count;++i) {
+        BYTE* p=(BYTE*)(ULONG_PTR)active[i]; DWORD id; OwnerWindowState* candidate;
+        if(!mem_readable(p,0x30)) continue;
+        id=*(DWORD*)(p+0x2c); if(id!=0 && id!=0x133) continue;
+        candidate=owner_state_for(active[i],1); if(!candidate) continue;
+        if(*(DWORD*)p!=candidate->vtable_ptr || *(DWORD*)(p+0x10) || !*(DWORD*)(p+0x28)) continue;
+        if(id==0 && s_equal(candidate->class_name,"UIBasicInfoWnd")) { basic=active[i]; bs=candidate; }
+        if(id==0x133 && s_equal(candidate->class_name,"UIMenuIconWnd")) { menu=active[i]; ms=candidate; }
+    }
+    if(!basic || !menu || (st->object_ptr!=basic && st->object_ptr!=menu)) return 0;
+    for(i=0;i<2;++i) {
+        BYTE* p=(BYTE*)(ULONG_PTR)(i?menu:basic);
+        LONG x=*(LONG*)(p+0x1c),y=*(LONG*)(p+0x20),w=*(LONG*)(p+0x14),h=*(LONG*)(p+0x18);
+        if(w<=0 || h<=0 || w>8192 || h>8192 || x < -8192 || y < -8192 ||
+           x>g_ui_screen_w+8192 || y>g_ui_screen_h+8192) return 0;
+        part.l=(float)x; part.t=(float)y; part.r=(float)(x+w); part.b=(float)(y+h);
+        if(!i) {
+            joined=part;
+            if(!bs->have_anchor) { choose_group_anchor(&part,&bs->ax,&bs->ay); bs->have_anchor=1; }
+        } else rect_union(&joined,&part);
+    }
+    scale=ui_scale_factor();
+    owner_fit_rect(&joined,bs->ax,bs->ay,&scale,&bs->offset_x,&bs->offset_y);
+    bs->fit_scale=scale;
+    ms->ax=bs->ax; ms->ay=bs->ay; ms->have_anchor=1; ms->fit_scale=scale;
+    ms->offset_x=bs->offset_x; ms->offset_y=bs->offset_y;
+    g_owner_fit_pair_tag=g_ui_present_serial+1;
+    g_owner_fit_pair_basic=basic; g_owner_fit_pair_menu=menu;
+    g_owner_fit_pair_basic_vt=bs->vtable_ptr; g_owner_fit_pair_menu_vt=ms->vtable_ptr;
+    g_owner_fit_pair_ax=bs->ax; g_owner_fit_pair_ay=bs->ay; g_owner_fit_pair_scale=scale;
+    g_owner_fit_pair_dx=bs->offset_x; g_owner_fit_pair_dy=bs->offset_y;
+    return 1;
+}
+
+static int owner_input_select_region(const POINT*, OwnerInputRegion*, DWORD*);
+static int owner_is_transient_tooltip(DWORD obj) {
+    DWORD manager;
+    /* The controller at E78D8C owns exactly one explanation popup at +1C.
+       Other UITransBalloonText instances include actor speech (VA 719D11). */
+    if(!obj || !g_exe || g_exe_size<PRM_TOOLTIP_MANAGER_RVA+4 ||
+       !mem_readable((BYTE*)g_exe+PRM_TOOLTIP_MANAGER_RVA,4)) return 0;
+    manager=*(DWORD*)((BYTE*)g_exe+PRM_TOOLTIP_MANAGER_RVA);
+    return manager && mem_readable((BYTE*)(ULONG_PTR)manager+0x1c,4) &&
+           *(DWORD*)((BYTE*)(ULONG_PTR)manager+0x1c)==obj;
+}
+static void owner_popup_offset(OwnerWindowState* st,LONG x,LONG y,float* dx,float* dy) {
+    OwnerHitSelection hit; OwnerInputRegion current; float s;
+    /* These two native factories position explanations in their source
+       control's coordinates. Move only the popup origin through that owner's
+       displayed transform; its cached pixels are enlarged exactly once. */
+    if(!st || (!s_equal(st->class_name,"UITransBalloonText") &&
+               !s_equal(st->class_name,"UICharInfoBalloonText")) ||
+       !g_ui_runtime_enabled || !g_input_enabled || !g_input_runtime_enabled ||
+       !g_owner_input_remap_enabled) return;
+    if(s_equal(st->class_name,"UITransBalloonText") && !owner_is_transient_tooltip(st->object_ptr)) return;
+    owner_input_region_lock(); hit=g_owner_hit_selection; owner_input_region_unlock();
+    if(!hit.valid || !hit.region.object_ptr ||
+       !owner_input_select_region(&hit.raw,&current,0) ||
+       current.object_ptr!=hit.region.object_ptr || current.vtable_ptr!=hit.region.vtable_ptr ||
+       current.native_size) return;
+    /* The separate character-info factory caches its popup on its source
+       root at +19C8. Never borrow an unrelated hovered window's transform. */
+    if(s_equal(st->class_name,"UICharInfoBalloonText") &&
+       (!mem_readable((BYTE*)(ULONG_PTR)current.object_ptr+0x19c8,4) ||
+        *(DWORD*)((BYTE*)(ULONG_PTR)current.object_ptr+0x19c8)!=st->object_ptr)) return;
+    s=current.fit_scale>0.0f?current.fit_scale:ui_scale_factor();
+    *dx=current.ax+((float)x-current.ax)*s+current.offset_x-(float)x;
+    *dy=current.ay+((float)y-current.ay)*s+current.offset_y-(float)y;
+}
+
 /* A UIWindow's cached pixels become one or more GPU tiles here, every frame.
  * Capture the whole-window transform once, before any tile or overlay is queued. */
 static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
@@ -2030,19 +2172,39 @@ static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
     if(owner_class_is_hover_popup(st->class_name) && !g_owner_tooltip_enabled) return 0;
     whole.l=(float)x; whole.t=(float)y; whole.r=(float)(x+w); whole.b=(float)(y+h);
     world_label=owner_class_is_world_label(st->class_name);
-    world_title=owner_class_is_world_title(st->class_name);
+    world_title=owner_class_is_world_title(st->class_name) ||
+        (s_equal(st->class_name,"UITransBalloonText") && !owner_is_transient_tooltip(obj));
     world_name=owner_class_is_world_name(st->class_name);
     native_size=!world_label && !world_title && !world_name && rect_is_global(&whole) && !g_ui_scale_global;
+    /* The character-info factory deliberately parks its registered popup at
+       (-400,-400) while inactive (VA 59F9B6). Do not reveal that hidden cache. */
+    if(s_equal(st->class_name,"UICharInfoBalloonText") && x==-400 && y==-400) native_size=1;
     if(world_label || world_title || world_name) {
         /* CSignBoardWnd placement at VA B6C430 subtracts integer half-width
            and half-height from the projected attachment. Preserve that point
            each frame instead of retaining a screen-edge anchor while it moves.
            UIChatRoomTitle is centered on the player at VA 719A89..97; its
            bitmap's bottom pointer (VA 4E6E34..5B) stays at the native position.
+           Player gauges use the live centered bitmap as well (VA 742788).
            Hover names have several native layout modes (VA 73D3D0), no pointer.
            Keep their live bitmap center fixed without changing native placement. */
         st->ax=(float)(x+w/2); st->ay=(float)(y+(world_title?h:h/2)); st->have_anchor=1;
     } else if(!st->have_anchor) { choose_group_anchor(&whole,&st->ax,&st->ay); st->have_anchor=1; }
+    st->fit_scale=ui_scale_factor();
+    if(!g_ui_keep_on_screen || !g_ui_runtime_enabled || native_size ||
+       world_label || world_title || world_name) {
+        st->offset_x=st->offset_y=0.0f;
+        if(!native_size) owner_popup_offset(st,x,y,&st->offset_x,&st->offset_y);
+    } else {
+        float ax=st->ax,ay=st->ay;
+        if(owner_class_is_hover_popup(st->class_name)) {
+            /* Cursor-following descriptions have no drag position to retain. */
+            ax=(float)x; ay=(float)y; st->offset_x=st->offset_y=0.0f;
+            owner_popup_offset(st,x,y,&st->offset_x,&st->offset_y);
+        }
+        if(!owner_fit_connected(st))
+            owner_fit_rect(&whole,ax,ay,&st->fit_scale,&st->offset_x,&st->offset_y);
+    }
     st->have_position=1; st->pos_x=x; st->pos_y=y;
     st->have_input_local_bbox=1;
     st->input_local_bbox.l=st->input_local_bbox.t=0;
@@ -2056,9 +2218,11 @@ static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
     st->last_draw_order=g_owner_bitmap_order; st->last_draw_present=g_ui_present_serial+1;
     g_owner_bitmap_scope.object_ptr=obj; g_owner_bitmap_scope.vtable_ptr=st->vtable_ptr;
     g_owner_bitmap_scope.thread=g_GetCurrentThreadId?g_GetCurrentThreadId():0;
-    g_owner_bitmap_scope.ax=owner_class_is_hover_popup(st->class_name)?(float)x:st->ax;
-    g_owner_bitmap_scope.ay=owner_class_is_hover_popup(st->class_name)?(float)y:st->ay;
+    g_owner_bitmap_scope.ax=owner_class_is_hover_popup(st->class_name) && !world_title?(float)x:st->ax;
+    g_owner_bitmap_scope.ay=owner_class_is_hover_popup(st->class_name) && !world_title?(float)y:st->ay;
     g_owner_bitmap_scope.native_size=native_size;
+    g_owner_bitmap_scope.fit_scale=st->fit_scale;
+    g_owner_bitmap_scope.offset_x=st->offset_x; g_owner_bitmap_scope.offset_y=st->offset_y;
     return 1;
 }
 
@@ -2154,6 +2318,8 @@ static void owner_bitmap_note_vertices(const void* verts, DWORD nverts, const Ow
             r->verts=verts; r->nverts=nverts; r->present=g_ui_present_serial;
             r->object_ptr=scope->object_ptr; r->vtable_ptr=scope->vtable_ptr;
             r->ax=scope->ax; r->ay=scope->ay; r->native_size=scope->native_size;
+            r->fit_scale=scope->fit_scale;
+            r->offset_x=scope->offset_x; r->offset_y=scope->offset_y;
             for(j=0;j<4;++j) {
                 const DWORD* v=(const DWORD*)((const BYTE*)verts+j*32);
                 for(k=0;k<4;++k) r->fields[j][k]=v[k];
@@ -2165,7 +2331,8 @@ static void owner_bitmap_note_vertices(const void* verts, DWORD nverts, const Ow
     }
     owner_bitmap_registry_unlock();
 }
-static int owner_bitmap_consume_vertices(DWORD fvf, const void* verts, DWORD nverts, float* ax, float* ay) {
+static int owner_bitmap_consume_transform(DWORD fvf, const void* verts, DWORD nverts,
+                                          float* ax, float* ay, float* scale, float* dx, float* dy) {
     DWORD i,j,k,bucket; int matched=0;
     if(!verts) return 0;
     bucket=owner_bitmap_bucket(verts);
@@ -2182,12 +2349,21 @@ static int owner_bitmap_consume_vertices(DWORD fvf, const void* verts, DWORD nve
             for(k=0;k<4;++k) if(v[k]!=r->fields[j][k]) matched=0;
             if(v[6]!=r->fields[j][4] || v[7]!=r->fields[j][5]) matched=0;
         }
-        if(matched) { *ax=r->ax; *ay=r->ay; ++g_owner_bitmap_matched; if(r->native_size) matched=2; }
+        if(matched) {
+            *ax=r->ax; *ay=r->ay;
+            *scale=r->fit_scale>0.0f?r->fit_scale:ui_scale_factor();
+            *dx=r->offset_x; *dy=r->offset_y;
+            ++g_owner_bitmap_matched; if(r->native_size) matched=2;
+        }
         else ++g_owner_bitmap_mismatched;
         break;
     }
     owner_bitmap_registry_unlock();
     return matched;
+}
+static int owner_bitmap_consume_vertices(DWORD fvf, const void* verts, DWORD nverts, float* ax, float* ay) {
+    float scale,dx,dy;
+    return owner_bitmap_consume_transform(fvf,verts,nverts,ax,ay,&scale,&dx,&dy);
 }
 static void __attribute__((thiscall)) owner_bitmap_queue_scoped(void* self, void* primitive, DWORD flags) {
     OwnerBitmapScope scope=g_owner_bitmap_scope;
@@ -2581,8 +2757,28 @@ static int owner_input_apply_transform(POINT* p, float ax, float ay) {
     p->y=(LONG)(y>=0.0f?y+0.5f:y-0.5f);
     return 1;
 }
+static void owner_input_region_bounds(const OwnerInputRegion* r, UIRectF* dst) {
+    float sc=r->fit_scale>0.0f?r->fit_scale:ui_scale_factor();
+    if(r->native_size) { *dst=r->rect; return; }
+    dst->l=r->ax+(r->rect.l-r->ax)*sc+r->offset_x;
+    dst->r=r->ax+(r->rect.r-r->ax)*sc+r->offset_x;
+    dst->t=r->ay+(r->rect.t-r->ay)*sc+r->offset_y;
+    dst->b=r->ay+(r->rect.b-r->ay)*sc+r->offset_y;
+}
+static int owner_input_map_region(POINT* p, const OwnerInputRegion* r) {
+    float sc,x,y;
+    if(!p) return 0;
+    if(r->native_size) return 1;
+    sc=r->fit_scale>0.0f?r->fit_scale:ui_scale_factor();
+    if(sc<0.01f) return 0;
+    x=r->ax+((float)p->x-r->ax-r->offset_x)/sc;
+    y=r->ay+((float)p->y-r->ay-r->offset_y)/sc;
+    p->x=(LONG)(x>=0.0f?x+0.5f:x-0.5f);
+    p->y=(LONG)(y>=0.0f?y+0.5f:y-0.5f);
+    return 1;
+}
 static int owner_input_map_capture(POINT* p, DWORD captured) {
-    DWORD i,root=0; float ax=0,ay=0; int found=0,native_size=0;
+    DWORD i,root=0; OwnerInputRegion region={0}; float ax=0,ay=0; int found=0,native_size=0;
     owner_input_region_lock();
     if(captured!=g_owner_capture_object) {
         g_owner_capture_object=captured; g_owner_capture_root=0; g_owner_capture_native_size=0;
@@ -2591,6 +2787,8 @@ static int owner_input_map_capture(POINT* p, DWORD captured) {
     if(captured && g_owner_capture_root) {
         root=g_owner_capture_root; ax=g_owner_capture_ax; ay=g_owner_capture_ay; found=1;
         native_size=g_owner_capture_native_size;
+        region.fit_scale=g_owner_capture_scale;
+        region.offset_x=g_owner_capture_offset_x; region.offset_y=g_owner_capture_offset_y;
     } else if(captured) {
         /* Prefer a captured root itself over a descendant alias. */
         for(i=0;i<g_owner_input_region_count;++i)
@@ -2605,13 +2803,17 @@ static int owner_input_map_capture(POINT* p, DWORD captured) {
                 ax=r->ax; ay=r->ay; found=1; native_size=r->native_size;
                 g_owner_capture_root=root; g_owner_capture_ax=ax; g_owner_capture_ay=ay;
                 g_owner_capture_native_size=native_size;
+                region=*r;
+                g_owner_capture_scale=r->fit_scale;
+                g_owner_capture_offset_x=r->offset_x; g_owner_capture_offset_y=r->offset_y;
                 break;
             }
         }
     }
     owner_input_region_unlock();
     if(!found) { if(captured) ++g_owner_capture_unknown; return 0; }
-    if(!p || (!native_size && !owner_input_apply_transform(p,ax,ay))) return 0;
+    region.ax=ax; region.ay=ay; region.native_size=native_size;
+    if(!owner_input_map_region(p,&region)) return 0;
     ++g_owner_capture_maps; ++g_owner_mapped_mouse;
     return 1;
 }
@@ -2661,11 +2863,14 @@ static void owner_finalize_frame(void) {
         if(local.l>=-4.0f && local.l<=24.0f) local.l=0.0f;
         if(local.t>=-4.0f && local.t<=24.0f) local.t=0.0f;
         if(local.r-local.l<32.0f || local.b-local.t<24.0f) continue;
-        if(local.r-local.l>(native_size?8192.0f:2048.0f) ||
-           local.b-local.t>(native_size?8192.0f:2048.0f)) continue;
+        if(local.r-local.l>((native_size || (g_ui_keep_on_screen && g_owner_bitmap_hooks_installed))?8192.0f:2048.0f) ||
+           local.b-local.t>((native_size || (g_ui_keep_on_screen && g_owner_bitmap_hooks_installed))?8192.0f:2048.0f)) continue;
         src.l=local.l+(float)ox; src.r=local.r+(float)ox;
         src.t=local.t+(float)oy; src.b=local.b+(float)oy;
-        if(src.r < -256.0f || src.b < -256.0f || src.l > (float)g_ui_screen_w+256.0f || src.t > (float)g_ui_screen_h+256.0f) continue;
+        /* A fitted bitmap can have an offscreen native origin. Its copied
+           display transform, rather than that old origin, owns hit testing. */
+        if(!(g_ui_keep_on_screen && g_owner_bitmap_hooks_installed) &&
+           (src.r < -256.0f || src.b < -256.0f || src.l > (float)g_ui_screen_w+256.0f || src.t > (float)g_ui_screen_h+256.0f)) continue;
         if(st->last_draw_present) {
             draw_age=g_ui_present_serial>=st->last_draw_present ? g_ui_present_serial-st->last_draw_present : 0;
             if(draw_age<=g_owner_input_exact_max_age_presents) exact_order=st->last_draw_order;
@@ -2673,6 +2878,9 @@ static void owner_finalize_frame(void) {
         g_owner_input_regions[rn].rect=src;
         g_owner_input_regions[rn].ax=st->ax;
         g_owner_input_regions[rn].ay=st->ay;
+        g_owner_input_regions[rn].fit_scale=st->fit_scale;
+        g_owner_input_regions[rn].offset_x=st->offset_x;
+        g_owner_input_regions[rn].offset_y=st->offset_y;
         g_owner_input_regions[rn].object_ptr=st->object_ptr;
         g_owner_input_regions[rn].present=g_ui_present_serial;
         g_owner_input_regions[rn].input_order=st->last_input_order;
@@ -2703,8 +2911,7 @@ static int owner_input_select_region(const POINT* p, OwnerInputRegion* out, DWOR
     for(i=0;i<g_owner_input_region_count;++i) {
         OwnerInputRegion* m=&g_owner_input_regions[i]; UIRectF dst; float area; int has_exact;
         if(g_ui_present_serial-m->present>2) continue;
-        if(m->native_size) dst=m->rect;
-        else transform_bounds(&m->rect,m->ax,m->ay,&dst);
+        owner_input_region_bounds(m,&dst);
         if(!rect_contains_point(&dst,px,py)) continue;
         ++candidates; area=rect_area(&dst); has_exact=m->exact_order?1:0;
         /* Preserve the same visual ordering for both coordinate conversion
@@ -2740,7 +2947,7 @@ static int remap_owner_point_selected(POINT* p, OwnerHitSelection* hit) {
     if(!owner_input_select_region(p,&best,&candidates)) return 0;
     g_owner_input_candidates+=candidates;
     if(candidates>1) ++g_owner_input_overlap_hits;
-    if(!best.native_size && !owner_input_apply_transform(p,best.ax,best.ay)) return 0;
+    if(!owner_input_map_region(p,&best)) return 0;
     if(hit) {
         hit->region=best; hit->raw=raw; hit->mapped=*p;
         hit->thread=g_GetCurrentThreadId?g_GetCurrentThreadId():0;
@@ -2763,21 +2970,29 @@ static int owner_hit_prepare_scope(LONG x, LONG y, OwnerHitScope* scope) {
     scope->valid=0;
     if(!g_owner_hit_hooks_installed || !g_owner_input_remap_enabled || !g_owner_scale_enabled ||
        !g_input_enabled || !g_input_runtime_enabled || !g_ui_runtime_enabled ||
-       !g_GetCurrentThreadId || ui_scale_factor()==1.0f || owner_native_capture()) return 0;
+       !g_GetCurrentThreadId || owner_native_capture()) return 0;
     thread=g_GetCurrentThreadId();
     owner_input_region_lock(); hit=g_owner_hit_selection; owner_input_region_unlock();
     if(!hit.valid || hit.thread!=thread || hit.mapped.x!=x || hit.mapped.y!=y) return 0;
     /* Mouse-down can reuse a sample without another WM_MOUSEMOVE. Expiring or
        consuming the sample here would reintroduce missed stationary clicks.
        Instead revalidate its target against the fresh copied visual snapshot. */
-    if(!owner_input_select_region(&hit.raw,&current,0) ||
-       current.object_ptr!=hit.region.object_ptr || current.vtable_ptr!=hit.region.vtable_ptr) return 0;
+    if(!owner_input_select_region(&hit.raw,&current,0)) {
+        /* A miss in displayed UI must also stay a miss for known roots at
+           their old native rectangles. Unknown native windows still pass. */
+        if(hit.region.object_ptr) return 0;
+        scope->target=0; scope->vtable_ptr=0; scope->thread=thread;
+        scope->x=x; scope->y=y; scope->valid=1; return 1;
+    }
+    if(current.object_ptr!=hit.region.object_ptr || current.vtable_ptr!=hit.region.vtable_ptr) return 0;
+    if(ui_scale_factor()==1.0f && (current.fit_scale==0.0f || current.fit_scale==1.0f) &&
+       current.offset_x==0.0f && current.offset_y==0.0f) return 0;
     /* This is only an identity check before native dispatch. Bounds and input
        ownership still come from copied records, never a live tree walk. */
     if(!mem_readable((void*)(ULONG_PTR)current.object_ptr,4) ||
        *(DWORD*)(ULONG_PTR)current.object_ptr!=current.vtable_ptr) return 0;
     mapped=hit.raw;
-    if(!current.native_size && !owner_input_apply_transform(&mapped,current.ax,current.ay)) return 0;
+    if(!owner_input_map_region(&mapped,&current)) return 0;
     if(mapped.x!=x || mapped.y!=y) return 0;
     scope->target=current.object_ptr; scope->vtable_ptr=current.vtable_ptr;
     scope->thread=thread; scope->x=x; scope->y=y; scope->valid=1;
@@ -2875,11 +3090,11 @@ static void owner_submit_log_age_hist(void) {
 }
 
 static void maybe_dump_owner_windows(void) {
-    short k; DWORD i,nactive=0,npopup=0; char line[384];
-    OwnerInputRegion active[64];
+    short k; DWORD i,nactive=0,npopup=0; char line[512];
+    static OwnerInputRegion active[64];
     if(!g_owner_submit_enabled) return;
     if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_OWNER_DIAGNOSTICS); if(!(k&1)) return;
-    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 3A present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 3B present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
     s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
     s_append(line,sizeof(line)," ownerMouse="); s_append_uint(line,sizeof(line),g_owner_mapped_mouse);
@@ -2889,6 +3104,11 @@ static void maybe_dump_owner_windows(void) {
     s_append(line,sizeof(line)," graceRegions="); s_append_uint(line,sizeof(line),g_owner_input_grace_regions);
     s_append(line,sizeof(line)," ownerCandidates="); s_append_uint(line,sizeof(line),g_owner_input_candidates);
     s_append(line,sizeof(line)," ownerOverlaps="); s_append_uint(line,sizeof(line),g_owner_input_overlap_hits); log_line(line);
+    line[0]=0; s_append(line,sizeof(line)," UISettings scale="); s_append_uint(line,sizeof(line),(DWORD)g_ui_scale_percent);
+    s_append(line,sizeof(line)," enabled="); s_append_uint(line,sizeof(line),(DWORD)g_ui_runtime_enabled);
+    s_append(line,sizeof(line)," keepOnScreen="); s_append_uint(line,sizeof(line),(DWORD)g_ui_keep_on_screen);
+    s_append(line,sizeof(line)," screen="); s_append_int(line,sizeof(line),g_ui_screen_w);
+    s_append(line,sizeof(line),"x"); s_append_int(line,sizeof(line),g_ui_screen_h); log_line(line);
     line[0]=0; s_append(line,sizeof(line)," totals scopedCalls="); s_append_uint(line,sizeof(line),g_owner_submit_scoped_calls);
     s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
     s_append(line,sizeof(line)," ambiguous="); s_append_uint(line,sizeof(line),g_owner_submit_total_ambiguous);
@@ -2970,7 +3190,8 @@ static void maybe_dump_owner_windows(void) {
     for(i=0;i<nactive;++i) active[i]=g_owner_input_regions[i];
     owner_input_region_unlock();
     for(i=0;i<nactive;++i) {
-        OwnerWindowState* st=owner_state_for(active[i].object_ptr,0); if(!st) continue;
+        UIRectF screen; OwnerWindowState* st=owner_state_for(active[i].object_ptr,0); if(!st) continue;
+        owner_input_region_bounds(&active[i],&screen);
         line[0]=0; s_append(line,sizeof(line)," owner obj="); s_append_hex8(line,sizeof(line),st->object_ptr);
         s_append(line,sizeof(line)," class="); s_append(line,sizeof(line),st->class_name);
         s_append(line,sizeof(line)," pos="); s_append_int(line,sizeof(line),st->pos_x); s_append(line,sizeof(line),","); s_append_int(line,sizeof(line),st->pos_y);
@@ -2978,6 +3199,13 @@ static void maybe_dump_owner_windows(void) {
         if(st->have_input_local_bbox) { s_append(line,sizeof(line)," local="); s_append_int(line,sizeof(line),(LONG)st->input_local_bbox.l); s_append(line,sizeof(line),","); s_append_int(line,sizeof(line),(LONG)st->input_local_bbox.t); s_append(line,sizeof(line),".."); s_append_int(line,sizeof(line),(LONG)st->input_local_bbox.r); s_append(line,sizeof(line),","); s_append_int(line,sizeof(line),(LONG)st->input_local_bbox.b); }
         s_append(line,sizeof(line)," inputOrder="); s_append_uint(line,sizeof(line),st->last_input_order);
         s_append(line,sizeof(line)," nativeSize="); s_append_uint(line,sizeof(line),(DWORD)active[i].native_size);
+        s_append(line,sizeof(line)," fitPercent="); s_append_uint(line,sizeof(line),(DWORD)(active[i].fit_scale*100.0f+0.5f));
+        s_append(line,sizeof(line)," offset="); s_append_int(line,sizeof(line),(LONG)active[i].offset_x);
+        s_append(line,sizeof(line),","); s_append_int(line,sizeof(line),(LONG)active[i].offset_y);
+        s_append(line,sizeof(line)," display="); s_append_int(line,sizeof(line),(LONG)screen.l);
+        s_append(line,sizeof(line),","); s_append_int(line,sizeof(line),(LONG)screen.t);
+        s_append(line,sizeof(line),".."); s_append_int(line,sizeof(line),(LONG)screen.r);
+        s_append(line,sizeof(line),","); s_append_int(line,sizeof(line),(LONG)screen.b);
         s_append(line,sizeof(line)," inputLast="); s_append_uint(line,sizeof(line),st->last_input_present);
         s_append(line,sizeof(line)," drawOrder="); s_append_uint(line,sizeof(line),st->last_draw_order);
         s_append(line,sizeof(line)," drawLast="); s_append_uint(line,sizeof(line),st->last_draw_present);
@@ -3490,6 +3718,47 @@ static void finalize_ui_frame(void) {
     ui_group_unlock();
 }
 
+/* The settings window publishes requests; only the render boundary applies
+ * them. Defer changes until a native drag/control capture has ended. */
+static int g_settings_request_valid,g_settings_request_scale,g_settings_request_enabled;
+static int g_settings_request_crisp,g_settings_request_keep,g_settings_request_save;
+static void ui_settings_apply(int percent,int enabled,int crisp,int keep,int save) {
+    if(percent<100 || percent>200) return;
+    g_settings_request_scale=percent; g_settings_request_enabled=enabled!=0;
+    g_settings_request_crisp=crisp!=0; g_settings_request_keep=keep!=0;
+    g_settings_request_save=save!=0; g_settings_request_valid=1;
+}
+static void ui_settings_commit(void) {
+    char line[160];
+    if(!g_settings_request_valid || owner_native_capture()) return;
+    g_settings_request_valid=0;
+    g_ui_scale_percent=g_settings_request_scale;
+    g_ui_enabled=1; g_ui_runtime_enabled=g_settings_request_enabled;
+    g_ui_sharp_filter=g_settings_request_crisp; g_ui_keep_on_screen=g_settings_request_keep;
+    line[0]=0; s_append(line,sizeof(line),"Settings applied: scale=");
+    s_append_uint(line,sizeof(line),(DWORD)g_ui_scale_percent);
+    s_append(line,sizeof(line)," enabled="); s_append_uint(line,sizeof(line),(DWORD)g_ui_runtime_enabled);
+    s_append(line,sizeof(line)," crisp="); s_append_uint(line,sizeof(line),(DWORD)g_ui_sharp_filter);
+    s_append(line,sizeof(line)," keepOnScreen="); s_append_uint(line,sizeof(line),(DWORD)g_ui_keep_on_screen);
+    log_line(line);
+    if(g_settings_request_save) {
+        typedef BOOL (WINAPI *PFN_SaveIni)(LPCSTR,LPCSTR,LPCSTR,LPCSTR);
+        HMODULE k32=find_loaded_module("kernel32.dll");
+        PFN_SaveIni write=(PFN_SaveIni)resolve_export(k32,"WritePrivateProfileStringA");
+        char percent[16]; int ok=write!=0;
+        percent[0]=0; s_append_uint(percent,sizeof(percent),(DWORD)g_ui_scale_percent);
+        if(write) {
+            if(!write("UI","ScalePercent",percent,g_ini_path)) ok=0;
+            if(!write("UI","Enabled",g_ui_runtime_enabled?"1":"0",g_ini_path)) ok=0;
+            if(!write("UI","SharpFilter",g_ui_sharp_filter?"1":"0",g_ini_path)) ok=0;
+            if(!write("UI","KeepOnScreen",g_ui_keep_on_screen?"1":"0",g_ini_path)) ok=0;
+        }
+        log_line(ok?"Settings saved to prm-ui-fix.ini":"Settings save failed; live settings remain applied");
+    }
+}
+static void ui_settings_poll(void);
+static void ui_settings_publish_snapshot(void);
+
 static void ui_present_boundary(const char* method) {
     char line[224]; DWORD rects=g_ui_frame_rect_count, owner_rects=g_owner_frame_member_count, submits=g_owner_submit_count;
     g_ui_present_seen=1;
@@ -3503,6 +3772,9 @@ static void ui_present_boundary(const char* method) {
     owner_install_active_vtables();
     vtrace_install_active_vtables();
     vtrace_maybe_finish();
+    ui_settings_poll();
+    ui_settings_commit();
+    ui_settings_publish_snapshot();
     if(g_ui_present_serial<=6) {
         line[0]=0; s_append(line,sizeof(line),"UI present #"); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," via "); s_append(line,sizeof(line),method);
@@ -3514,7 +3786,7 @@ static void ui_present_boundary(const char* method) {
         log_line(line);
     }
     if(g_owner_submit_enabled && g_ui_present_serial>0 && (g_ui_present_serial%1200UL)==0) {
-        line[0]=0; s_append(line,sizeof(line),"3A heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+        line[0]=0; s_append(line,sizeof(line),"3B heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
         s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
         s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
@@ -3578,7 +3850,7 @@ static int looks_like_ui_vertices(DWORD prim, DWORD fvf, const void* verts, DWOR
 
 static const void* make_scaled_ui_vertices(DWORD prim, DWORD fvf, const void* verts, DWORD nverts, BYTE* scratch, DWORD scratch_cap, void* frame, DWORD caller_rva) {
     DWORD stride, bytes, i, j;
-    float minx=999999.0f,miny=999999.0f,maxx=-999999.0f,maxy=-999999.0f,ax,ay,s;
+    float minx=999999.0f,miny=999999.0f,maxx=-999999.0f,maxy=-999999.0f,ax,ay,s=ui_scale_factor(),dx=0.0f,dy=0.0f;
     UIRectF r; int bitmap_owned;
     /* These exact native calls assemble child pixels into an offscreen window
        cache. Scaling them would distort the cache before its final screen draw. */
@@ -3586,7 +3858,7 @@ static const void* make_scaled_ui_vertices(DWORD prim, DWORD fvf, const void* ve
         ++g_owner_bitmap_offscreen; return verts;
     }
     if(cursor_consume_vertices(fvf,verts,nverts)) return verts;
-    bitmap_owned=owner_bitmap_consume_vertices(fvf,verts,nverts,&ax,&ay);
+    bitmap_owned=owner_bitmap_consume_transform(fvf,verts,nverts,&ax,&ay,&s,&dx,&dy);
     if(bitmap_owned==2) return verts;
     if(bitmap_owned) {
         /* Exact native provenance remains valid at the screen edge. Applying
@@ -3622,10 +3894,9 @@ static const void* make_scaled_ui_vertices(DWORD prim, DWORD fvf, const void* ve
         }
     }
     for(j=0;j<bytes;++j) scratch[j]=((const BYTE*)verts)[j];
-    s=ui_scale_factor();
     for(i=0;i<nverts;++i) {
         float* v=(float*)(scratch+i*stride);
-        v[0]=ax+(v[0]-ax)*s; v[1]=ay+(v[1]-ay)*s;
+        v[0]=ax+(v[0]-ax)*s+dx; v[1]=ay+(v[1]-ay)*s+dy;
     }
     ++g_ui_scaled_draws;
     return scratch;
@@ -3701,11 +3972,20 @@ static BOOL WINAPI hook_ScreenToClient(HWND hwnd, POINT* p) {
     if(!g_real_ScreenToClient) return FALSE;
     ok=g_real_ScreenToClient(hwnd,p);
     if(ok) {
+        POINT raw=*p;
         if(primary) g_input_hwnd=hwnd;
         if(g_owner_input_remap_enabled) {
             if(!remap_owner_point_selected(p,primary?&hit:0)) remap_ui_point(p);
         } else remap_ui_point(p);
-        if(primary) owner_hit_publish(&hit);
+        if(primary) {
+            if(!hit.valid && g_owner_input_remap_enabled && g_owner_scale_enabled &&
+               g_input_enabled && g_input_runtime_enabled && g_ui_runtime_enabled &&
+               g_GetCurrentThreadId && !owner_native_capture()) {
+                hit.raw=raw; hit.mapped=*p; hit.thread=g_GetCurrentThreadId();
+                hit.valid=hit.thread!=0;
+            }
+            owner_hit_publish(&hit);
+        }
     }
     return ok;
 }
@@ -3896,7 +4176,7 @@ static void install_phase2_hooks(void) {
     if(!g_exe) return;
     ok=patch_import(g_exe,"DDRAW.dll","DirectDrawCreateEx",(void*)hook_DirectDrawCreateEx,(void**)&g_real_DirectDrawCreateEx);
     log_line(ok ? "DirectDrawCreateEx IAT hook: OK" : "DirectDrawCreateEx IAT hook: NOT FOUND");
-    if(ok) log_line("Phase 3A renderer armed: all-window owner UI + isolated world input");
+    if(ok) log_line("Phase 3B renderer armed: all-window owner UI + isolated world input");
 }
 
 /* ---------- real WINMM ---------- */
@@ -3923,12 +4203,14 @@ void* WINAPI resolve_winmm_name(const char* name) {
     return resolve_export(g_real_winmm, name);
 }
 
+#include "ui_settings.h"
+
 static void initialize_mod(void) {
     HMODULE exe;
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Phase 3A Native UI Hit Ownership ===");
+    log_line("=== PRM UI FIX Phase 3B Owned UI Screen Bounds ===");
     log_line("Proxy DLL loaded");
     if (g_GetPrivateProfileIntA) {
         g_font_enabled = (int)g_GetPrivateProfileIntA("Font", "Enabled", 1, g_ini_path);
@@ -3940,6 +4222,7 @@ static void initialize_mod(void) {
         g_ui_enabled = (int)g_GetPrivateProfileIntA("UI", "Enabled", 1, g_ini_path);
         g_ui_scale_percent = (int)g_GetPrivateProfileIntA("UI", "ScalePercent", 133, g_ini_path);
         g_ui_sharp_filter = g_GetPrivateProfileIntA("UI", "SharpFilter", 0, g_ini_path)!=0;
+        g_ui_keep_on_screen = g_GetPrivateProfileIntA("UI", "KeepOnScreen", 1, g_ini_path)!=0;
         g_ui_origin_x = (LONG)(int)g_GetPrivateProfileIntA("UI", "OriginX", 0, g_ini_path);
         g_ui_origin_y = (LONG)(int)g_GetPrivateProfileIntA("UI", "OriginY", 0, g_ini_path);
         g_ui_screen_w = (LONG)(int)g_GetPrivateProfileIntA("UI", "ScreenWidth", 3440, g_ini_path);
@@ -4018,6 +4301,7 @@ static void initialize_mod(void) {
     log_uint("Font.Enabled=", (DWORD)g_font_enabled);
     log_uint("Font.AddSize=", (DWORD)g_font_add);
     log_uint("UI.SharpFilter=", (DWORD)g_ui_sharp_filter);
+    log_uint("UI.KeepOnScreen=", (DWORD)g_ui_keep_on_screen);
     log_uint("Trace.Enabled=", (DWORD)g_trace_enabled);
     log_uint("Trace.CaptureMs=", g_trace_capture_ms);
     log_uint("UI.Enabled=", (DWORD)g_ui_enabled);
@@ -4077,7 +4361,7 @@ static void initialize_mod(void) {
     owner_submit_install_hooks();
     vtrace_install_submit_hooks();
     vtrace_install_active_vtables();
-    log_line("Phase 3A armed: F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
+    log_line("Phase 3B armed: F2 settings; F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
     log_line("Initialization complete");
 }
 

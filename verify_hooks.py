@@ -78,6 +78,34 @@ VIEWPORT_STORES = (
 MINIMAP_OWNER = (0x00331E9F, bytes.fromhex("83 3d 80 78 eb 00 00"), 0x00AB7880)
 
 
+# Native layout evidence for the separately registered Basic Info/menu block.
+# No new patch uses these addresses; they validate the object ID and placement.
+CONNECTED_LAYOUT = (
+    (0x001FF205, bytes.fromhex("68 33 01 00 00 b9 d8 76 eb 00")),
+    (0x001FF237, bytes.fromhex("8b 43 18 8b ce 03 45 e0 8b 16 50 ff 75 dc 8b 42 10 ff d0")),
+    (0x006CF733, bytes.fromhex("8b 45 08 89 41 1c 8b 45 0c 83 c0 fc 89 41 20")),
+    (0x00206ADF, bytes.fromhex("89 43 2c")),
+)
+
+# Exact popup constructors and registration, including the classes that have
+# no Wnd/Window suffix. These are evidence spans, not additional hooks.
+POPUP_LAYOUT = (
+    (0x000DCD25, bytes.fromhex("c7 06 f0 1c d3 00")),
+    (0x00228500, bytes.fromhex("e8 7b c8 fc ff")),
+    (0x0019F974, bytes.fromhex("c7 06 8c cd d3 00")),
+    (0x0019F9AB, bytes.fromhex("e8 d0 53 05 00")),
+    (0x002284E2, bytes.fromhex("89 47 1c")),
+    (0x0019F9B8, bytes.fromhex("68 70 fe ff ff 68 70 fe ff ff")),
+)
+
+PLAYER_GAUGE_LAYOUT = (
+    (0x000F835D, bytes.fromhex("c7 06 8c 41 d3 00")),
+    (0x00351334, bytes.fromhex("89 87 c8 02 00 00")),
+    (0x00342788, bytes.fromhex("83 bb c8 02 00 00 00")),
+    (0x003427A3, bytes.fromhex("8b 86 ac 00 00 00 83 e8 1e 8b be b0 00 00 00")),
+)
+
+
 class PEImage:
     def __init__(self, path):
         self.data = path.read_bytes()
@@ -158,6 +186,14 @@ def main():
         print("Minimap owner: native UIWindowMgr+1A8 reference and source RVA match")
     except ValueError as error:
         failures.append(str(error))
+    try:
+        if pe.read_code(0x000E9290, 6) != bytes.fromhex("8b 0d 8c 8d e7 00"):
+            raise ValueError("Tooltip source controller: native load differs")
+        if source_constant(source, "PRM_TOOLTIP_MANAGER_RVA") != 0x00A78D8C:
+            raise ValueError("Tooltip source controller: source RVA differs")
+        print("Tooltip controller: native reference and source RVA match")
+    except ValueError as error:
+        failures.append(str(error))
     for label, prefix, call_rva, expected_target in HOOKS:
         try:
             instruction = pe.read_code(call_rva, 5)
@@ -199,6 +235,27 @@ def main():
                     failures.append(f"{name}: source differs from validated executable manifest")
             except ValueError as error:
                 failures.append(str(error))
+    for rva, expected in CONNECTED_LAYOUT:
+        try:
+            if pe.read_code(rva, len(expected)) != expected:
+                raise ValueError(f"connected Basic Info/menu layout differs at RVA 0x{rva:08X}")
+        except ValueError as error:
+            failures.append(str(error))
+    print("Connected Basic Info/menu native ID and layout evidence checked")
+    for rva, expected in POPUP_LAYOUT:
+        try:
+            if pe.read_code(rva, len(expected)) != expected:
+                raise ValueError(f"transient popup constructor/registration differs at RVA 0x{rva:08X}")
+        except ValueError as error:
+            failures.append(str(error))
+    print("Transient explanation and character-info popup native ownership checked")
+    for rva, expected in PLAYER_GAUGE_LAYOUT:
+        try:
+            if pe.read_code(rva, len(expected)) != expected:
+                raise ValueError(f"player gauge constructor/live placement differs at RVA 0x{rva:08X}")
+        except ValueError as error:
+            failures.append(str(error))
+    print("Player HP/SP gauge native constructor and live projection checked")
     viewport_ok = True
     for rva, expected in VIEWPORT_STORES:
         try:

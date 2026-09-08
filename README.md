@@ -3,31 +3,61 @@
 A 32-bit WinMM proxy that enlarges Return to Morroc's interface while keeping
 window contents, mouse interaction and character movement aligned.
 
-The current test build is **Phase 3A**. It includes complete-window scaling, topmost
+The current test build is **Phase 3B**. It includes complete-window scaling, topmost
 window input, dragging, attached NPC descriptions, player chat-room titles,
 character hover names, fullscreen map region previews and the compact minimap.
 The game executable is left unchanged on disk.
 
-## Window click fix in Phase 3A
+## Keep windows on screen
 
-At 200% scale, Basic Info and chat can look separate while their original
-rectangles overlap. The previous code converted the mouse position for the
-visible Basic Info window, then the native hit test could give that point to
-chat. Basic Info consequently appeared stuck.
+With `UI.KeepOnScreen=1` (the default), enlarged windows move inward whenever
+an edge would leave the configured screen. Windows larger than the screen at
+the chosen scale shrink uniformly just enough to fit. Contents and mouse input
+use the same adjustment. The correction persists while you drag, so a window
+can move away from the edge immediately.
 
-Phase 3A carries the selected window through the native root hit test. Other
-identified roots cannot take that window's converted point. This applies to
-every tracked input window without checking its name or class. The game still
-finds its own child controls and runs its normal hover, modal and capture logic.
-The cached mouse sample is revalidated against current input regions, so clicks
-also work after the pointer has stopped moving.
+Basic Info and its attached icon menu fit as one block. Other windows retain
+independent positions. Cursor-following descriptions also fit within the screen;
+world-attached NPC/player labels retain their established attachment behavior.
+Fullscreen UI keeps the existing native-size policy with `UI.ScaleGlobal=0`.
 
-The focused in-game check is pending: restart with the existing 200% settings,
-click Basic Info and its menu icons with chat open, pause the pointer before
-clicking, and try dragging the panel. Also click and drag overlapping inventory,
-equipment and skill windows to check the same behavior across windows. Press F8
-afterward. This build is being
-tested locally on `fix/basic-info-input`; the published `main` build is Phase 2Z.
+## Live settings with F2
+
+Press **F2** while the game is focused to open the UI FIX settings panel. Change
+the percentage (100–200), enable/disable scaling, choose crisp filtering, or
+switch Keep on screen. **Apply** changes the running game; **Save** also stores
+those four settings in `prm-ui-fix.ini`. **Close**, **Esc**, or **F2** returns to
+the game. Ordinary Apply changes last until restart.
+
+The panel is a small native window owned by the game. Changes take effect at a
+frame boundary after any current game drag has ended. It does not change font
+metrics, resolution, or world movement settings. No chat command hook is needed.
+
+## Window click ownership
+
+The user accepted Phase 3A's click fix. At 200% scale, Basic Info and chat can
+look separate while their original rectangles overlap. The native hit test
+could assign a converted Basic Info click to chat. The selected visible owner
+now survives that second selection step, for every tracked input window without
+checking its name or class. Each window keeps its native child-control and
+capture handling, including clicks after the pointer stops moving.
+
+Phase 3B also records when the pointer misses displayed UI. The native hit test
+then skips known windows at their former unscaled rectangles, preventing
+explanation popups from appearing there. Untracked native windows retain their
+own hit handling.
+
+Transient explanations and character-info popups now receive bitmap ownership
+on their first draw. Control-based explanations follow their visible source
+window. The player HP/SP gauge also receives ownership and uses its live center
+on every frame, fixing the stale group position that could make it drift during
+movement. Name/bar spacing still needs confirmation in the combined game test.
+
+Phase 3B's focused in-game check is pending: use F2 to try different scales,
+place windows near each edge with F5 scaling off, then enable scaling and check
+that they fit, remain clickable, and drag smoothly. Check the connected Basic
+Info/menu block too, then press F8. This build is tested locally on
+`fix/ui-screen-bounds`; published `main` remains Phase 2Z.
 
 ## Compatibility
 
@@ -53,8 +83,8 @@ See [validation](VALIDATION.md) for the checks and their coverage.
    `WINEDLLOVERRIDES=winmm=n,b`. Preserve any other overrides already configured.
 5. Start the game. The proxy writes `prm-ui-fix.log` beside the DLL.
 
-Keep the matching INI with this build. Configuration is read at startup, so
-restart after changing resolution or settings. To uninstall, remove this
+Keep the matching INI with this build. Configuration is read at startup. Use F2 for live UI settings;
+restart after changing the game resolution or other INI settings. To uninstall, remove this
 proxy and restore the files you backed up.
 
 ## Configuration
@@ -63,6 +93,7 @@ proxy and restore the files you backed up.
 | --- | --- | --- |
 | `UI.ScalePercent` | `200` | UI enlargement, from 100% to 200% |
 | `UI.ScreenWidth` / `UI.ScreenHeight` | `3440` / `1440` | Game render resolution used for UI anchors |
+| `UI.KeepOnScreen` | `1` (default when absent) | Keep enlarged windows within the screen |
 | `UI.SharpFilter` | `0` | Native smoothing; use `1` for point sampling |
 | `Font.AddSize` | `0` | Preserve native font metrics and layout |
 | `OwnerBitmap.Enabled` | `1` | Complete-window ownership and scaling |
@@ -82,6 +113,7 @@ loading, bitmap resolution and logical layout would also need to support them.
 
 | Key | Action |
 | --- | --- |
+| F2 | Open/close the live UI settings panel |
 | F3 | Switch native smoothing / crisp point sampling |
 | F4 | Capture a trace, when enabled in the INI |
 | F5 | Toggle UI scaling |
@@ -90,7 +122,7 @@ loading, bitmap resolution and logical layout would also need to support them.
 | F8 | Dump ownership, input, minimap and renderer diagnostics |
 | F9 | Toggle world input correction |
 
-F11 and F12 remain available to the game. Runtime toggles reset on restart.
+F11 and F12 remain available to the game. Unsaved runtime settings reset on restart.
 
 ## Build
 
@@ -132,7 +164,7 @@ argument forwarding. They do not launch the game.
 For a runtime report, press F8 in-game and inspect the generated log:
 
 ```sh
-python3 audit_phase3a.py /path/to/prm-ui-fix.log
+python3 audit_phase3b.py /path/to/prm-ui-fix.log
 ```
 
 The auditor reports missing samples as REVIEW. A successful diagnostic audit

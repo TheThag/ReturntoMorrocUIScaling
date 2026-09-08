@@ -1,7 +1,56 @@
 # PRM UI FIX implementation notes
 
-Phase 3A. These notes describe the native client paths and the implemented
+Phase 3B. These notes describe the native client paths and the implemented
 ownership rules. For installation and settings, see [README](../README.md).
+
+## Screen bounds and live settings
+
+A window uses `anchor + (native_point - anchor) * fit_scale + offset`.
+`fit_scale` starts at the configured percentage and is reduced uniformly if
+the whole bitmap is larger than the configured screen. `owner_fit_rect` then
+corrects any left/top/right/bottom overflow. Each ordinary owner's additive
+offset persists independently from its base anchor and native position.
+Recomputing the offset from zero would trap a window at the edge while its
+native coordinates moved through the hidden overflow; retaining the correction
+lets subsequent drag deltas move it inward immediately.
+
+The transform is copied through bitmap scopes, queued vertex records and input
+regions. All tiles/overlays share it; deferred vertices keep their recorded scale
+even if the global setting changes. Inverse input subtracts the same offset and
+divides by the same scale. Capture freezes the starting transform so boundary
+corrections cannot feed back into the game's drag delta. Input publication admits
+fitted bitmap bounds up to the already validated 8192-pixel source limit, including
+native origins outside the screen. Native positions are never rewritten.
+
+Basic Info and Menu are independent manager roots with an explicit native layout
+relationship: 5FF205 selects Menu ID 0x133; 5FF237..248 passes Basic's absolute
+position and height to Menu's virtual position method ACF730, which subtracts
+four pixels vertically. IDs are stored at object+2C (606ADF). The fitting helper
+requires both active, enabled, unparented objects, their exact classes and live
+vtable identities. It fits their union using Basic's anchor and shares the
+result across both roots for the frame. Unknown/unrelated windows are not joined.
+Real child controls already belong to their parent's whole-window bitmap.
+
+Cursor-following descriptions receive a fresh edge correction, so an old offset
+does not detach them from the pointer. World-attached descriptions, room titles
+and hover names retain their accepted actor attachment rules. Native-size
+fullscreen UI remains under its previous policy rather than the movable-window
+fit policy. The geometry fallback is unchanged.
+
+F2 creates an owned native settings window on a dedicated UI thread. A packed
+atomic mailbox transfers requests to the existing present boundary. Only that
+boundary changes the running game settings, deferring while native capture is
+active. Apply changes runtime settings; Save also writes only ScalePercent,
+Enabled, SharpFilter and KeepOnScreen in the UI section. The DLL keeps dynamic
+API resolution and empty import directories. Window creation, message structs,
+and keyboard navigation follow the Microsoft definitions for
+[CreateWindowExA](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexa),
+[MSG](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msg), and
+[IsDialogMessageA](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isdialogmessagea).
+
+F8 adds live UISettings and each input owner's fit percentage, correction offset
+and displayed rectangle. The bounds auditor checks the newest run/sample and
+distinguishes diagnostic coverage from the user's interaction result.
 
 ## Native hit ownership
 
@@ -39,10 +88,49 @@ ownership use copied snapshots. Missing/stale/reused records, disabled scaling,
 capture and unrelated coordinates forward normally. Samples from other
 ScreenToClient callers do not overwrite this native mouse record.
 
+A central sample outside every displayed input region now remains a valid
+miss, with no selected object. Revalidation confirms the same visual miss and
+the candidate wrapper rejects all currently identified roots. This prevents
+hover callbacks at their old unscaled rectangles. Unknown roots still use
+their original methods. A previously selected owner disappearing does not
+become a miss implicitly; that stale selection follows the existing bypass.
+
 The new hooks validate original call targets and bytes, flush the instruction
 cache, and keep filtering disabled after partial installation. No shared method
 entry, game window position or vtable is rewritten. F8 adds `OwnerHit` queries,
 scoped queries, rejected competing candidates and unmatched query counts.
+
+## Transient explanations and player gauge
+
+The RTTI suffix gate missed `UITransBalloonText`, `UICharInfoBalloonText` and
+`UIPlayerGage`, although they are actual manager-backed UIWindows. They now use
+the existing final bitmap ownership boundary immediately, with passive input.
+
+Generic control explanations call 628430. For example, the button method at
+4E9060 converts local (0,-20) through B1E150 and calls the factory at 4E92A1.
+The factory constructs UITransBalloonText (4DCCF0, vtable D31CF0), registers it
+at 628500 and sets the native position at 6285AE. UICharInfoBalloonText uses
+59F8D0, vtable D3CD8C and registration at 59F9AB. Their cached pixels remain
+native until the final manager bitmap draw. The tooltip origin is translated
+through the fresh copied visually selected owner's scale/offset, then its
+pixels are enlarged once. The ordinary tooltip must be the exact controller
+E78D8C's +1C object; the character-info popup must match its selected source
+root's +19C8 field. Missing, changed or native-size sources retain the native
+origin. The inactive character-info position (-400,-400) remains hidden.
+
+UITransBalloonText also carries actor speech at 719D11..9E14. Those other
+instances receive a live bottom-center attachment and no source-window
+translation or screen fitting. Hovering an unrelated control therefore cannot
+pull world speech away from its actor. All these text popups remain passive.
+
+UIPlayerGage (constructor 4F8320, vtable D3418C, renderer 512F90) is distinct
+from the UIBarGraphPlayer controls inside normal HUD windows. The world UI
+object stores it at +2C8 and registers it through 5F4DD0. Per-frame placement
+at 742788..280B reads the actor projection +AC/+B0, centers the 60-pixel bar
+at projection X and applies a signed vertical offset. The final bitmap now
+scales around its current integer center, without screen fitting or input
+ownership. No actor projection or name-placement code is patched. The name
+overlap report will be checked alongside the corrected moving bar in-game.
 
 ## Compact minimap
 

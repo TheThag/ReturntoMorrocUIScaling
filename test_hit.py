@@ -28,6 +28,30 @@ def extract_type(source, name):
     return match[0]
 
 
+def extract_definition(source, name):
+    """Extract a definition when the source has a same-named declaration."""
+    candidates = re.finditer(
+        r"^static [^\n]*\b" + re.escape(name) + r"\s*\(", source, re.M)
+    for start in candidates:
+        opening = source.find("{", start.start())
+        if opening < 0 or source.find(";", start.start(), opening) >= 0:
+            continue
+        tokens = re.finditer(
+            r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|'
+            r"'(?:\\.|[^'\\])*'|[{}]",
+            source[opening:], re.S)
+        depth = 0
+        for token in tokens:
+            if token[0] == "{":
+                depth += 1
+            elif token[0] == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start.start():opening + token.end()]
+        raise ValueError(f"unterminated actual source function {name}")
+    raise ValueError(f"missing actual source function {name}")
+
+
 def extract_function_keep_callconv(source, name):
     start = re.search(r"^static [^\n]*\b" + re.escape(name) + r"\s*\(", source, re.M)
     if not start:
@@ -49,9 +73,11 @@ def extract_function_keep_callconv(source, name):
 
 PREFIX = r'''
 #include <assert.h>
+#include <math.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 typedef int32_t LONG;
 typedef uint32_t DWORD;
@@ -67,6 +93,7 @@ typedef struct { float l,t,r,b; } UIRectF;
 #define FALSE 0
 #define PRM_UI_CAPTURE_RVA 0x10UL
 #define PRM_UI_MOUSE_RETURN_RVA 0x495BE1UL
+#define PRM_TOOLTIP_MANAGER_RVA 0x00A78D8CUL
 '''
 
 
@@ -100,12 +127,15 @@ enum {
 
 typedef struct {
     void* vt;
-    BYTE pad[0x7c];
+    BYTE pad[0x19c8];
 } NativeWindow;
 
+/* Character-info popups keep their source root at +19C8.  Keep the fixture
+   root objects large enough to exercise that real native field. */
 static NativeWindow g_native[OBJ_COUNT];
 static void* g_vtables[VT_COUNT][64];
-static BYTE g_fake_exe[64];
+#define FAKE_EXE_SIZE (PRM_TOOLTIP_MANAGER_RVA+0x100UL)
+static BYTE g_fake_exe[FAKE_EXE_SIZE];
 static BYTE* g_exe;
 static DWORD g_exe_size;
 
@@ -140,6 +170,7 @@ static DWORD g_owner_capture_link_count;
 static DWORD g_ui_present_serial;
 static DWORD g_owner_capture_object,g_owner_capture_root;
 static float g_owner_capture_ax,g_owner_capture_ay;
+static float g_owner_capture_scale,g_owner_capture_offset_x,g_owner_capture_offset_y;
 static int g_owner_capture_native_size;
 static DWORD g_owner_capture_maps,g_owner_capture_changes,g_owner_capture_unknown;
 static DWORD g_owner_mapped_mouse,g_owner_input_candidates,g_owner_input_overlap_hits;
@@ -341,6 +372,10 @@ static void source_reset(void) {
     memset(g_fake_exe,0,sizeof(g_fake_exe));
     g_exe=g_fake_exe;
     g_exe_size=sizeof(g_fake_exe);
+    /* The native tooltip manager owns the one transient explanation object.
+       Actor speech uses the same class but is absent from this slot. */
+    *(DWORD*)(g_fake_exe+PRM_TOOLTIP_MANAGER_RVA)=native_ptr(OBJ_UNKNOWN);
+    *(DWORD*)((BYTE*)&g_native[OBJ_UNKNOWN]+0x1c)=native_ptr(OBJ_CHAT);
     g_owner_input_region_count=0;
     g_owner_capture_link_count=0;
     g_ui_present_serial=100;
@@ -348,6 +383,8 @@ static void source_reset(void) {
     g_owner_capture_root=0;
     g_owner_capture_ax=0;
     g_owner_capture_ay=0;
+    g_owner_capture_scale=0;
+    g_owner_capture_offset_x=g_owner_capture_offset_y=0;
     g_owner_capture_native_size=0;
     g_owner_capture_maps=0;
     g_owner_capture_changes=0;
@@ -414,6 +451,8 @@ static void add_region(unsigned int index,int object,DWORD present,
     m->rect=(UIRectF){l,t,r,b};
     m->ax=ax;
     m->ay=ay;
+    m->fit_scale=g_scale;
+    m->offset_x=m->offset_y=0;
     m->object_ptr=native_ptr(object);
     m->present=present;
     m->input_order=input_order;
@@ -455,6 +494,114 @@ static void expect_unscoped_chat(DWORD expected_unmatched) {
 
 
 TESTS = r'''
+static void popup_class(OwnerWindowState* st,const char* name) {
+    memset(st,0,sizeof(*st));
+    st->object_ptr=native_ptr(OBJ_CHAT);
+    strcpy(st->class_name,name);
+}
+static void expect_popup_offset(float dx,float dy,float want_x,float want_y) {
+    assert(fabsf(dx-want_x)<0.001f && fabsf(dy-want_y)<0.001f);
+}
+static void test_popup_offset_uses_fresh_selected_owner(void) {
+    OwnerWindowState st; OwnerHitSelection before; POINT p; float dx,dy;
+
+    /* The selected hit is a displayed 200% owner.  The popup origin is in
+       that owner's native/source coordinates, so the same transform must be
+       applied to it. */
+    reset_all();
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,0);
+    p=(POINT){300,450}; publish_remap(&p,&before);
+    popup_class(&st,"UITransBalloonText");
+    dx=7.0f; dy=-9.0f;
+    owner_popup_offset(&st,250,900,&dx,&dy);
+    expect_popup_offset(dx,dy,250.0f,-540.0f);
+    assert(memcmp(&before,&g_owner_hit_selection,sizeof(before))==0);
+
+    /* A moved owner with a new scale and translation is selected from the
+       fresh region while the sample itself remains stationary. */
+    reset_all();
+    g_scale=1.5f;
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,100,1200,20,20,0);
+    g_owner_input_regions[0].offset_x=11.0f;
+    g_owner_input_regions[0].offset_y=-13.0f;
+    p=(POINT){250,800}; publish_remap(&p,&before);
+    popup_class(&st,"UICharInfoBalloonText");
+    g_ui_present_serial=101;
+    memset(g_owner_input_regions,0,sizeof(g_owner_input_regions));
+    g_owner_input_region_count=0;
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,40,1380,20,20,0);
+    g_owner_input_regions[0].offset_x=6.0f;
+    g_owner_input_regions[0].offset_y=-8.0f;
+    *(DWORD*)((BYTE*)&g_native[OBJ_BASIC]+0x19c8)=st.object_ptr;
+    /* Keep the old hit publication and prove the helper revalidates it
+       against the current region without publishing a new selection. */
+    {
+        OwnerHitSelection stationary=before;
+        dx=5.0f; dy=6.0f;
+        owner_popup_offset(&st,250,900,&dx,&dy);
+        expect_popup_offset(dx,dy,111.0f,-248.0f);
+        assert(memcmp(&stationary,&g_owner_hit_selection,sizeof(stationary))==0);
+    }
+}
+
+static void test_popup_offset_bypasses_stale_or_unmatched_sources(void) {
+    OwnerWindowState st; OwnerHitSelection hit; POINT p; float dx,dy;
+
+    reset_all();
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,0);
+    p=(POINT){300,450}; publish_remap(&p,&hit);
+    popup_class(&st,"UITransBalloonText");
+    /* Actor speech shares UITransBalloonText but is not the controller's
+       explanation instance, so a hovered UI owner cannot move it. */
+    *(DWORD*)((BYTE*)&g_native[OBJ_UNKNOWN]+0x1c)=native_ptr(OBJ_MENU);
+    dx=7.0f; dy=-9.0f;
+    owner_popup_offset(&st,250,900,&dx,&dy);
+    assert(dx==7.0f && dy==-9.0f);
+
+    reset_all();
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,0);
+    p=(POINT){300,450}; publish_remap(&p,&hit);
+    popup_class(&st,"UITransBalloonText");
+    g_ui_present_serial+=3;
+    dx=7.0f; dy=-9.0f;
+    owner_popup_offset(&st,250,900,&dx,&dy);
+    assert(dx==7.0f && dy==-9.0f);
+
+    reset_all();
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,0);
+    p=(POINT){300,450}; publish_remap(&p,&hit);
+    g_owner_input_regions[0].object_ptr=native_ptr(OBJ_CHAT);
+    g_owner_input_regions[0].vtable_ptr=native_vt(OBJ_CHAT);
+    dx=-4.0f; dy=12.0f;
+    owner_popup_offset(&st,250,900,&dx,&dy);
+    assert(dx==-4.0f && dy==12.0f);
+
+    reset_all();
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,1);
+    p=(POINT){100,950}; publish_remap(&p,&hit);
+    dx=13.0f; dy=-2.0f;
+    owner_popup_offset(&st,250,900,&dx,&dy);
+    assert(dx==13.0f && dy==-2.0f);
+
+    reset_all();
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,0);
+    p=(POINT){300,450}; publish_remap(&p,&hit);
+    popup_class(&st,"UICharInfoBalloonText");
+    *(DWORD*)((BYTE*)&g_native[OBJ_BASIC]+0x19c8)=native_ptr(OBJ_MENU);
+    dx=-15.0f; dy=4.0f;
+    owner_popup_offset(&st,250,900,&dx,&dy);
+    assert(dx==-15.0f && dy==4.0f);
+
+    reset_all();
+    add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,0);
+    p=(POINT){300,450}; publish_remap(&p,&hit);
+    popup_class(&st,"UITransBalloonTextOther");
+    dx=19.0f; dy=23.0f;
+    owner_popup_offset(&st,250,900,&dx,&dy);
+    assert(dx==19.0f && dy==23.0f);
+    puts("PASS: popup offsets require exact class, fresh matching selected owner, and non-native-size source; selection remains passive");
+}
+
 static void test_logcase_basic_filters_chat(void) {
     POINT p={300,450}; OwnerHitSelection hit={0},published;
     NativeWindow before_object; void* before_vt_entry;
@@ -744,8 +891,8 @@ static void test_screen_to_client_publication_boundary(void) {
     assert(hook_ScreenToClient(primary,&p));
     expect_point(p,297,695);
     assert(g_fallback_calls==1);
-    assert(!g_owner_hit_selection.valid);
-    assert(g_owner_hit_selection.raw.x==0 && g_owner_hit_selection.raw.y==0);
+    assert(g_owner_hit_selection.valid && !g_owner_hit_selection.region.object_ptr);
+    assert(g_owner_hit_selection.raw.x==300 && g_owner_hit_selection.raw.y==700);
     expect_unscoped_chat(1);
 
     reset_all(); add_logcase();
@@ -754,7 +901,32 @@ static void test_screen_to_client_publication_boundary(void) {
     assert(!hook_ScreenToClient(primary,&p));
     expect_point(p,123,456);
     assert(!g_owner_hit_selection.valid);
-    puts("PASS: primary ScreenToClient publishes hit state, secondary calls preserve it, and failed/unowned primary samples clear it");
+    puts("PASS: primary ScreenToClient publishes hits or misses, secondary calls preserve them, and failed samples clear them");
+}
+
+static void test_display_miss_rejects_ghost_hover(void) {
+    POINT p={0,0}; DWORD result;
+    reset_all(); add_logcase(); g_fallback_enabled=0;
+    g_fake_raw_x=100; g_fake_raw_y=850;
+    /* This point is inside native Chat, but outside both displayed windows. */
+    assert(fake_manager_query(g_manager,100,850)==native_ptr(OBJ_CHAT));
+    memset(g_native_calls,0,sizeof(g_native_calls));
+    assert(hook_ScreenToClient((HWND)&g_native[OBJ_BASIC],&p));
+    expect_point(p,100,850);
+    assert(g_owner_hit_selection.valid && !g_owner_hit_selection.region.object_ptr);
+    result=query_at(p.x,p.y);
+    assert(result==0 && g_hover==0);
+    assert(g_owner_hit_scoped==1 && g_owner_hit_rejected==2);
+    assert(!g_native_calls[OBJ_CHAT] && !g_native_calls[OBJ_BASIC]);
+    /* A stationary miss stays a miss with freshly published regions. */
+    g_ui_present_serial+=50; add_logcase();
+    assert(query_at(p.x,p.y)==0);
+    /* Unowned native windows retain their own hover/click path. */
+    g_manager_order[0]=OBJ_UNKNOWN; g_manager_order_count=1;
+    g_native_x[OBJ_UNKNOWN]=0; g_native_y[OBJ_UNKNOWN]=800;
+    g_native_w[OBJ_UNKNOWN]=600; g_native_h[OBJ_UNKNOWN]=300;
+    assert(query_at(p.x,p.y)==native_ptr(OBJ_UNKNOWN));
+    puts("PASS: displayed UI misses reject ghost hover at original rectangles, persist while stationary, and preserve unknown native windows");
 }
 
 static void test_anonymous_owner_pairs_and_scale_properties(void) {
@@ -834,6 +1006,8 @@ static void test_wrapper_and_direct_candidate_forwarding(void) {
 
 int main(void) {
     g_manager=(void*)&g_native[OBJ_MENU_CHILD];
+    test_popup_offset_uses_fresh_selected_owner();
+    test_popup_offset_bypasses_stale_or_unmatched_sources();
     test_logcase_basic_filters_chat();
     test_real_visual_chat_and_native_size();
     test_menu_overlap_uses_its_own_vtable();
@@ -844,6 +1018,7 @@ int main(void) {
     test_capture_disabled_noowner_and_unknown_passthrough();
     test_nested_scope_and_forwarding();
     test_screen_to_client_publication_boundary();
+    test_display_miss_rejects_ghost_hover();
     test_anonymous_owner_pairs_and_scale_properties();
     test_wrapper_and_direct_candidate_forwarding();
     return 0;
@@ -858,14 +1033,17 @@ def main():
     args = parser.parse_args()
     source = args.source.read_text()
     types = "\n".join(extract_type(source, name) for name in (
-        "OwnerInputRegion", "OwnerHitSelection", "OwnerHitScope", "OwnerCaptureLink"))
+        "OwnerWindowState", "OwnerInputRegion", "OwnerHitSelection", "OwnerHitScope", "OwnerCaptureLink"))
     ordinary = (
-        "rect_contains_point", "rect_area", "transform_bounds",
-        "owner_input_apply_transform", "owner_native_capture",
-        "owner_input_map_capture", "owner_input_select_region",
+        "s_equal", "rect_contains_point", "rect_area", "owner_native_capture",
+        "owner_input_region_bounds", "owner_input_map_region",
+        "owner_input_map_capture", "owner_input_select_region", "owner_is_transient_tooltip", "owner_popup_offset",
         "remap_owner_point_selected", "remap_owner_point", "owner_hit_publish",
         "owner_hit_prepare_scope", "owner_hit_reject_candidate")
-    functions = "\n".join(extract_function(source, name) for name in ordinary)
+    functions = "\n".join(
+        extract_definition(source, name) if name == "owner_input_select_region"
+        else extract_function(source, name)
+        for name in ordinary)
     functions += "\n" + extract_function_keep_callconv(source, "owner_hit_query_scoped")
     functions += "\n" + extract_function_keep_callconv(source, "owner_hit_candidate")
     functions += "\n" + extract_function_keep_callconv(source, "hook_ScreenToClient")
