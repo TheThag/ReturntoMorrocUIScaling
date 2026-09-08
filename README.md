@@ -84,6 +84,10 @@ See [validation](VALIDATION.md) for the checks and their coverage.
    `WINEDLLOVERRIDES=winmm=n,b`. Preserve any other overrides already configured.
 5. Start the game. The proxy writes `prm-ui-fix.log` beside the DLL.
 
+Only `winmm.dll` and `prm-ui-fix.ini` need to be installed. The runtime log is
+created automatically. Keep rollback builds, test reports, auditors, and other
+development documentation in the project folder.
+
 Keep the matching INI with this build. Configuration is read at startup. Use F2 for live UI settings;
 restart after changing the game resolution or other INI settings. To uninstall, remove this
 proxy and restore the files you backed up.

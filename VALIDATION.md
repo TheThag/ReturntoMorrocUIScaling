@@ -82,4 +82,6 @@ with Left/Right, apply with Enter, save and close with S, and reopen/close with
 F2 or Esc. Confirm the game remains visible and movement/clicks resume. Press
 F8 after the combined check. The new bounds auditor reads Phase 3C snapshots;
 it cannot determine visual tooltip alignment or fullscreen focus behavior.
-The preceding Phase 3B DLL and configuration are backed up before installation.
+Previous DLLs and configurations are preserved in the project archives and
+evidence folder; development backups and reports do not belong in the game
+installation.
