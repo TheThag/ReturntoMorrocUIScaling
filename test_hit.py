@@ -592,6 +592,11 @@ static void test_popup_offset_bypasses_stale_or_unmatched_sources(void) {
     owner_popup_offset(&st,250,900,&dx,&dy);
     assert(dx==-15.0f && dy==4.0f);
 
+    *(DWORD*)((BYTE*)&g_native[OBJ_BASIC]+0x19c8)=st.object_ptr;
+    g_native[OBJ_BASIC].vt=g_vtables[VT_REUSED];
+    owner_popup_offset(&st,250,900,&dx,&dy);
+    assert(dx==-15.0f && dy==4.0f);
+
     reset_all();
     add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,0);
     p=(POINT){300,450}; publish_remap(&p,&hit);

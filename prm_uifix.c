@@ -2153,7 +2153,9 @@ static void owner_popup_offset(OwnerWindowState* st,LONG x,LONG y,float* dx,floa
     /* The separate character-info factory caches its popup on its source
        root at +19C8. Never borrow an unrelated hovered window's transform. */
     if(s_equal(st->class_name,"UICharInfoBalloonText") &&
-       (!mem_readable((BYTE*)(ULONG_PTR)current.object_ptr+0x19c8,4) ||
+       (!mem_readable((void*)(ULONG_PTR)current.object_ptr,4) ||
+        *(DWORD*)(ULONG_PTR)current.object_ptr!=current.vtable_ptr ||
+        !mem_readable((BYTE*)(ULONG_PTR)current.object_ptr+0x19c8,4) ||
         *(DWORD*)((BYTE*)(ULONG_PTR)current.object_ptr+0x19c8)!=st->object_ptr)) return;
     s=current.fit_scale>0.0f?current.fit_scale:ui_scale_factor();
     *dx=current.ax+((float)x-current.ax)*s+current.offset_x-(float)x;

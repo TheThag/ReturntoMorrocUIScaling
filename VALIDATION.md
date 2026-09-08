@@ -10,7 +10,7 @@ public `main` still contains Phase 2Z.
 
 | Artifact | SHA256 |
 | --- | --- |
-| `winmm.dll` | `73c64055d53b93178c8988a1ae2fbefb25c62b9058473edf85eacfdbbdd15d05` |
+| `winmm.dll` | `23db0d182da953afc791a0c33c4e5008dc5db4340a9157fcbfd44ccd2b0d8de4` |
 | Target `PRM.exe` | `5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b` |
 | `prm-ui-fix.ini` | `bea46a21132b93954950d0a433a217f10eb77265fb5287e1d5f791ce473966bb` |
 
