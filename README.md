@@ -1,7 +1,9 @@
 # Return to Morroc UI Scaling — UI FIX
 
 This development branch contains the next confirmation-dialog and fullscreen-map
-hover-name corrections. The published download below remains version 1.0.
+hover-name corrections. It also contains pending startup resolution autodetection;
+that change remains unpublished until manual testing and confirmation. The
+published download below remains version 1.0 and does not include autodetection.
 
 UI FIX enlarges the game interface while keeping clicks, dragging and tooltips
 aligned with their windows. It includes screen fitting, corrected world input,
@@ -15,8 +17,12 @@ The repository contains source code; compiled DLLs are distributed as release as
 
 1. Close the game and preserve any existing `winmm.dll` and UI FIX configuration.
 2. Extract `winmm.dll` and `prm-ui-fix.ini` beside `PRM.exe`.
-3. Set `ScreenWidth` and `ScreenHeight` under `[UI]` to the game's render
-   resolution. Choose `ScalePercent` between **100 and 200**.
+3. By default, UI FIX reads `savedata/OptionInfo.lua` beside `PRM.exe` once at
+   startup and uses the literal `OptionInfoList["WIDTH"]` and
+   `OptionInfoList["HEIGHT"]` values when they form a valid pair. If the file
+   or either value is unavailable, it falls back to `ScreenWidth` and
+   `ScreenHeight` under `[UI]`. Set `AutoDetectResolution=0` to always use those
+   manual values. Choose `ScalePercent` between **100 and 200**.
 4. For Wine/Lutris, set `WINEDLLOVERRIDES=winmm=n,b`, preserving other overrides.
 5. Start the game. Press **Shift+P** to open the settings overlay.
 
@@ -43,16 +49,19 @@ and preserves the rest of the INI.
 | INI setting | Default | Purpose |
 | --- | --- | --- |
 | `UI.ScalePercent` | `150` | UI enlargement, 100%–200% |
-| `UI.ScreenWidth` / `UI.ScreenHeight` | `3440` / `1440` | Game render resolution |
+| `UI.AutoDetectResolution` | `1` | Read `savedata/OptionInfo.lua` at startup; fall back to the manual resolution |
+| `UI.ScreenWidth` / `UI.ScreenHeight` | `3440` / `1440` | Manual render-resolution fallback |
 | `UI.KeepOnScreen` | `1` | Fit enlarged windows within the screen |
 | `UI.SharpFilter` | `0` | Native smoothing; `1` selects point sampling |
 | `Font.AddSize` | `0` | Preserve native font metrics and layout |
 | `OwnerBitmap.Enabled` | `1` | Complete-window ownership and scaling |
 | `WorldInput.Enabled` | `1` | Separate correction for terrain input |
 
-Resolution and INI changes require a game restart. UI anchors use the configured
-resolution; world input uses the live viewport/client dimensions. Fullscreen UI
-keeps its native size with `UI.ScaleGlobal=0`. Enlargement does not reflow layouts.
+Resolution and INI changes require a game restart. Autodetection reads the
+relative `savedata/OptionInfo.lua` path once during startup and does not poll it
+while the game runs. UI anchors use the selected resolution; world input uses the
+live viewport/client dimensions. Fullscreen UI keeps its native size with
+`UI.ScaleGlobal=0`. Enlargement does not reflow layouts.
 
 The renderer enlarges existing cached bitmaps. Native smoothing generally looks
 better at fractional scales; point sampling makes pixels more distinct. Higher

@@ -2,9 +2,31 @@
 
 GitHub release 1.0 remains available at
 https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.0.
-This development build addresses the two issues reported during its preparation:
-confirmation-dialog buttons and character hover names visible through the map.
-The new changes still require an in-game check.
+This development build adds startup resolution detection and addresses the two
+issues reported during release preparation: confirmation-dialog buttons and
+character hover names visible through the map. The new build still requires an
+in-game check before replacing release 1.0.
+
+## Automatic resolution
+
+The default `UI.AutoDetectResolution=1` loads the literal WIDTH/HEIGHT pair from
+the installed game's `savedata/OptionInfo.lua`. Both values replace the manual
+INI dimensions together, before any renderer or input hook is installed. Invalid
+or unavailable data leaves the INI fallback intact; `AutoDetectResolution=0`
+selects manual dimensions without opening the file. The startup log reports the
+selected source and effective dimensions. Resolution changes require a restart.
+
+The parser and file-loader harnesses pass with generated 1080p, 1440p, 4K and
+boundary-size fixtures, and with the real saved file reporting 3440x1440. They
+cover exact keys, comments/strings, malformed and truncated values, duplicates,
+read failures, short reads, the 64 KiB file bound and handle cleanup. Tests run
+without a game installation; an optional path adds a real-file check. The loader
+harness executes the production functions with 32-bit ASan/UBSan and Win32 stubs.
+Actual startup detection under Wine remains part of the pending manual test.
+
+`UI.SharpFilter=0` remains the default in both source and the distributed INI,
+so crisp point sampling is off. Existing overlay settings and shortcuts retain
+their behavior.
 
 ## Confirmation dialogs
 
@@ -39,18 +61,20 @@ unrelated windows.
 
 ## Verification scope
 
-All 22 host harnesses pass. They execute production C functions and native assembly bridges
-with 32-bit fixtures and sanitizer coverage. They do not launch the game. Native
+All 24 host harnesses pass. They execute production C functions and native assembly bridges,
+including 32-bit fixtures with sanitizer coverage. They do not launch the game. Native
 hook checks are run against PRM.exe SHA256
 `5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b`.
 The executable is not modified. Source/build input hashes are in SHA256SUMS;
-local test output is kept under evidence/modal-map-fix outside the game folder.
+local test output is kept under evidence/auto-resolution outside the game folder.
 
-The installed test DLL preserves the INI, including the Shift+P overlay binding,
-blank optional shortcuts and the user's live scale/filter preferences.
+The test installation adds AutoDetectResolution=1 and keeps SharpFilter=0.
+Other INI values, including Shift+P, blank optional shortcuts and the user's
+200% scale, are preserved. Existing rendering/input functions are unchanged
+from the previous modal/map development build; only startup configuration changes.
 The published 1.0 tag and ZIP retain their original tested source and binary.
 
-Test DLL: 223744 bytes, PE32/i386, 185 exact WinMM exports, no static
+Test DLL: 229888 bytes, PE32/i386, 185 exact WinMM exports, no static
 imports, IAT or delay imports. SHA256:
 
-`a963f1e7993ac52a659e4f56463ded3d93ced9d5ae1ee74dc9772844a3063fa5`
+`52ba39f3b139aa264132c591fbf4f1152a6e780e69786191f7e5826ad37bda5e`

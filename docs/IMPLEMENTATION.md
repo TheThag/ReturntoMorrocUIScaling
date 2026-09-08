@@ -3,6 +3,26 @@
 Version 1.0.1 development. These notes describe the native client paths and the implemented
 ownership rules. For installation and settings, see [README](../README.md).
 
+## Startup resolution
+
+`UI.AutoDetectResolution=1` reads `savedata\OptionInfo.lua` beside the installed
+DLL at startup. Only literal `OptionInfoList["WIDTH"]` and
+`OptionInfoList["HEIGHT"]` assignments supply dimensions; `OLD_WIDTH` and
+`OLD_HEIGHT` are ignored. The file is treated as data and no Lua is executed.
+Both dimensions must be valid before either replaces the INI fallback: width
+640..16384, height 480..16384. Missing, unreadable, malformed or oversized files
+leave `UI.ScreenWidth` and `UI.ScreenHeight` in effect. Setting automatic
+detection to zero selects those manual dimensions directly.
+Manual dimensions are bounded to the same range before use.
+
+The loader resolves `ReadFile` through the existing dynamic API mechanism,
+reads at most 64 KiB plus an overflow probe byte, and closes the handle before
+parsing. The large buffer has static storage; the startup path introduces no
+CRT dependency or large stack allocation. A truncated DLL path is rejected.
+The effective dimensions and their source are logged before hooks are armed.
+Detection runs once per process, so changing the game's saved resolution
+requires restarting the game. Overlay saves do not write these settings.
+
 ## Screen bounds and live settings
 
 A window uses `anchor + (native_point - anchor) * fit_scale + offset`.

@@ -137,8 +137,10 @@ typedef struct _LOGFONTA {
 #define PRM_UI_WINDOW_UPDATE_RVA   0x00207F49UL
 #define PRM_UI_MOUSE_RETURN_RVA     0x00495BE1UL
 #define FILE_APPEND_DATA 0x00000004UL
+#define GENERIC_READ 0x80000000UL
 #define FILE_SHARE_READ 0x00000001UL
 #define FILE_SHARE_WRITE 0x00000002UL
+#define OPEN_EXISTING 3UL
 #define OPEN_ALWAYS 4UL
 #define FILE_ATTRIBUTE_NORMAL 0x00000080UL
 #define INVALID_HANDLE_VALUE ((HANDLE)(ULONG_PTR)-1)
@@ -164,6 +166,7 @@ typedef HMODULE (WINAPI *PFN_GetModuleHandleA)(LPCSTR);
 typedef DWORD   (WINAPI *PFN_GetModuleFileNameA)(HMODULE, LPSTR, DWORD);
 typedef UINT    (WINAPI *PFN_GetPrivateProfileIntA)(LPCSTR, LPCSTR, int, LPCSTR);
 typedef HANDLE  (WINAPI *PFN_CreateFileA)(LPCSTR, DWORD, DWORD, LPVOID, DWORD, DWORD, HANDLE);
+typedef BOOL    (WINAPI *PFN_ReadFile)(HANDLE, LPVOID, DWORD, DWORD*, LPVOID);
 typedef BOOL    (WINAPI *PFN_WriteFile)(HANDLE, LPCVOID, DWORD, DWORD*, LPVOID);
 typedef DWORD   (WINAPI *PFN_SetFilePointer)(HANDLE, LONG, LONG*, DWORD);
 typedef BOOL    (WINAPI *PFN_CloseHandle)(HANDLE);
@@ -185,6 +188,7 @@ static PFN_GetModuleHandleA g_GetModuleHandleA;
 static PFN_GetModuleFileNameA g_GetModuleFileNameA;
 static PFN_GetPrivateProfileIntA g_GetPrivateProfileIntA;
 static PFN_CreateFileA g_CreateFileA;
+static PFN_ReadFile g_ReadFile;
 static PFN_WriteFile g_WriteFile;
 static PFN_SetFilePointer g_SetFilePointer;
 static PFN_CloseHandle g_CloseHandle;
@@ -263,6 +267,7 @@ static int g_ui_keep_on_screen = 1;
 static DWORD g_ui_sharp_draws,g_ui_sharp_failures;
 static LONG g_ui_origin_x = 0;
 static LONG g_ui_origin_y = 0;
+static int g_ui_auto_resolution = 1;
 static LONG g_ui_screen_w = 3440;
 static LONG g_ui_screen_h = 1440;
 static int g_ui_runtime_enabled = 1;
@@ -594,6 +599,7 @@ static void bootstrap_kernel32(void) {
     g_GetModuleFileNameA = (PFN_GetModuleFileNameA)resolve_export(k32, "GetModuleFileNameA");
     g_GetPrivateProfileIntA = (PFN_GetPrivateProfileIntA)resolve_export(k32, "GetPrivateProfileIntA");
     g_CreateFileA = (PFN_CreateFileA)resolve_export(k32, "CreateFileA");
+    g_ReadFile = (PFN_ReadFile)resolve_export(k32, "ReadFile");
     g_WriteFile = (PFN_WriteFile)resolve_export(k32, "WriteFile");
     g_SetFilePointer = (PFN_SetFilePointer)resolve_export(k32, "SetFilePointer");
     g_CloseHandle = (PFN_CloseHandle)resolve_export(k32, "CloseHandle");
@@ -619,7 +625,10 @@ static void make_sidecar_path(char* out, unsigned int cap, const char* file) {
 }
 
 static void init_paths(void) {
-    if (g_GetModuleFileNameA) g_GetModuleFileNameA(g_self, g_dll_path, sizeof(g_dll_path));
+    if (g_GetModuleFileNameA) {
+        DWORD n = g_GetModuleFileNameA(g_self, g_dll_path, sizeof(g_dll_path));
+        if (!n || n >= sizeof(g_dll_path)) g_dll_path[0] = 0;
+    }
     make_sidecar_path(g_ini_path, sizeof(g_ini_path), "prm-ui-fix.ini");
     make_sidecar_path(g_log_path, sizeof(g_log_path), "prm-ui-fix.log");
 }
@@ -639,6 +648,62 @@ static void log_line(const char* s) {
 }
 
 #include "ui_hotkeys.h"
+#include "ui_resolution.h"
+
+/* Read the game's saved display size once, before installing any hooks. The
+ * path follows this DLL's installation directory, independent of the working
+ * directory. OptionInfo.lua is parsed as data; no Lua code is executed. */
+static int ui_resolution_path(char* out, DWORD cap) {
+    static const char suffix[] = "savedata\\OptionInfo.lua";
+    DWORD n = 0, dir = 0;
+    while (n < sizeof(g_dll_path) && g_dll_path[n]) {
+        if (g_dll_path[n] == '/' || g_dll_path[n] == '\\') dir = n + 1;
+        ++n;
+    }
+    if (!out || !dir || n == sizeof(g_dll_path) || dir + sizeof(suffix) > cap) return 0;
+    for (n = 0; n < dir; ++n) out[n] = g_dll_path[n];
+    for (n = 0; n < sizeof(suffix); ++n) out[dir + n] = suffix[n];
+    return 1;
+}
+
+static int ui_resolution_read(const char* path, LONG* width, LONG* height) {
+    /* One extra byte distinguishes a complete 64 KiB file from a truncated
+     * prefix. Static storage avoids a large stack allocation in this DLL. */
+    static char data[65537];
+    HANDLE file;
+    DWORD used = 0, got;
+    int complete = 0;
+    if (!g_CreateFileA || !g_ReadFile || !g_CloseHandle) return 0;
+    file = g_CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if (file == INVALID_HANDLE_VALUE) return 0;
+    while (used < sizeof(data)) {
+        got = 0;
+        if (!g_ReadFile(file, data + used, sizeof(data) - used, &got, 0)
+            || got > sizeof(data) - used) break;
+        if (!got) { complete = 1; break; }
+        used += got;
+    }
+    g_CloseHandle(file);
+    if (!complete || !used) return 0;
+    return ui_resolution_parse(data, used, width, height);
+}
+
+static void ui_resolution_load(void) {
+    char path[520];
+    LONG width = g_ui_screen_w, height = g_ui_screen_h;
+    if (!g_ui_auto_resolution) {
+        log_line("UI resolution: manual INI dimensions (AutoDetectResolution=0)");
+        return;
+    }
+    if (!ui_resolution_path(path, sizeof(path)) || !ui_resolution_read(path, &width, &height)) {
+        log_line("UI resolution: savedata\\OptionInfo.lua unavailable or invalid; using INI dimensions");
+        return;
+    }
+    g_ui_screen_w = width;
+    g_ui_screen_h = height;
+    log_line("UI resolution: detected from savedata\\OptionInfo.lua");
+}
 
 static void log_uint(const char* label, DWORD v) {
     char buf[64];
@@ -4960,6 +5025,7 @@ static void initialize_mod(void) {
         g_ui_keep_on_screen = g_GetPrivateProfileIntA("UI", "KeepOnScreen", 1, g_ini_path)!=0;
         g_ui_origin_x = (LONG)(int)g_GetPrivateProfileIntA("UI", "OriginX", 0, g_ini_path);
         g_ui_origin_y = (LONG)(int)g_GetPrivateProfileIntA("UI", "OriginY", 0, g_ini_path);
+        g_ui_auto_resolution = g_GetPrivateProfileIntA("UI", "AutoDetectResolution", 1, g_ini_path)!=0;
         g_ui_screen_w = (LONG)(int)g_GetPrivateProfileIntA("UI", "ScreenWidth", 3440, g_ini_path);
         g_ui_screen_h = (LONG)(int)g_GetPrivateProfileIntA("UI", "ScreenHeight", 1440, g_ini_path);
         g_ui_anchor_mode = (int)g_GetPrivateProfileIntA("UI", "AnchorMode", 1, g_ini_path);
@@ -4996,7 +5062,9 @@ static void initialize_mod(void) {
         if (g_ui_scale_percent < 100) g_ui_scale_percent = 100;
         if (g_ui_scale_percent > 200) g_ui_scale_percent = 200;
         if (g_ui_screen_w < 640) g_ui_screen_w = 640;
+        if (g_ui_screen_w > 16384) g_ui_screen_w = 16384;
         if (g_ui_screen_h < 480) g_ui_screen_h = 480;
+        if (g_ui_screen_h > 16384) g_ui_screen_h = 16384;
         if (g_ui_anchor_mode < 0) g_ui_anchor_mode = 0;
         if (g_ui_anchor_mode > 2) g_ui_anchor_mode = 2;
         if (g_ui_group_gap < 0) g_ui_group_gap = 0;
@@ -5031,6 +5099,7 @@ static void initialize_mod(void) {
         if(g_vtrace_slot_last>=VTRACE_SLOT_COUNT) g_vtrace_slot_last=VTRACE_SLOT_COUNT-1;
         if(g_vtrace_slot_last<g_vtrace_slot_first) g_vtrace_slot_last=g_vtrace_slot_first;
     }
+    ui_resolution_load();
     g_ui_runtime_enabled = g_ui_enabled;
     g_input_runtime_enabled = g_input_enabled;
     log_uint("Font.Enabled=", (DWORD)g_font_enabled);
@@ -5043,6 +5112,7 @@ static void initialize_mod(void) {
     log_uint("UI.ScalePercent=", (DWORD)g_ui_scale_percent);
     log_uint("UI.OriginX=", (DWORD)g_ui_origin_x);
     log_uint("UI.OriginY=", (DWORD)g_ui_origin_y);
+    log_uint("UI.AutoDetectResolution=", (DWORD)g_ui_auto_resolution);
     log_uint("UI.ScreenWidth=", (DWORD)g_ui_screen_w);
     log_uint("UI.ScreenHeight=", (DWORD)g_ui_screen_h);
     log_uint("UI.AnchorMode=", (DWORD)g_ui_anchor_mode);
