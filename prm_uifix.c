@@ -1,5 +1,5 @@
 /*
- * PRM UI FIX - Phase 2Z complete minimap ownership
+ * PRM UI FIX - Phase 3A native UI hit ownership
  * 32-bit WINMM proxy for Return to Morroc PRM.exe
  *
  * Goals for Phase 2F:
@@ -126,6 +126,12 @@ typedef struct _LOGFONTA {
 #define PRM_OFFSCREEN_DP_RETURN_RVA 0x000A22A1UL
 #define PRM_OFFSCREEN_DIP_RETURN_RVA 0x000A228DUL
 #define PRM_UI_CAPTURE_RVA         0x00AB786CUL
+#define PRM_UI_HIT_EVENT_CALL_RVA   0x001F862CUL
+#define PRM_UI_HIT_EVENT_TARGET_RVA 0x001FA1A0UL
+#define PRM_UI_HIT_MOUSE_CALL_RVA   0x00209FCEUL
+#define PRM_UI_HIT_MOUSE_TARGET_RVA 0x001FA1A0UL
+#define PRM_UI_HIT_CANDIDATE_RVA    0x001FA1C2UL
+#define PRM_UI_MOUSE_RETURN_RVA     0x00495BE1UL
 #define FILE_APPEND_DATA 0x00000004UL
 #define FILE_SHARE_READ 0x00000001UL
 #define FILE_SHARE_WRITE 0x00000002UL
@@ -942,7 +948,7 @@ static void install_device_hooks(void* obj) {
     e=patch_vtable_slot(vt,31,(void*)hook_DrawPrimitiveVB,&r->orig_draw_vb);
     f=patch_vtable_slot(vt,32,(void*)hook_DrawIndexedPrimitiveVB,&r->orig_draw_indexed_vb);
     g=patch_vtable_slot(vt,35,(void*)hook_SetTexture,&r->orig_set_texture);
-    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 2Z owner UI + isolated world input)");
+    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 3A owner UI + isolated world input)");
     else log_line("Direct3DDevice7 hooks: PARTIAL/FAILED");
 }
 
@@ -1395,8 +1401,8 @@ static DWORD g_owner_frame_member_count;
 static OwnerMember g_owner_prev_members[MAX_OWNER_MEMBERS]; /* legacy/source diagnostics */
 static DWORD g_owner_prev_member_count;
 
-/* Phase 2Q input snapshot: one full learned UIWindow region per active owner.
- * No live UIWindow pointer dereference is needed on the input path. */
+/* One full learned UIWindow region per active owner. Input uses copied bounds;
+ * native hit dispatch additionally validates the selected object's vtable. */
 typedef struct {
     UIRectF rect;
     float ax, ay;
@@ -1404,10 +1410,32 @@ typedef struct {
     DWORD present;
     DWORD input_order;
     DWORD exact_order;
+    DWORD vtable_ptr;
     int native_size;
 } OwnerInputRegion;
 static OwnerInputRegion g_owner_input_regions[MAX_OWNER_MEMBERS];
 static DWORD g_owner_input_region_count;
+
+/* Keep the owner chosen for the native mouse sample through the manager's
+ * later hit query. The game can reuse a stationary sample for many frames. */
+typedef struct {
+    OwnerInputRegion region;
+    POINT raw,mapped;
+    DWORD thread;
+    int valid;
+} OwnerHitSelection;
+typedef struct {
+    DWORD target,vtable_ptr,thread;
+    LONG x,y;
+    int valid;
+} OwnerHitScope;
+static OwnerHitSelection g_owner_hit_selection;
+static OwnerHitScope g_owner_hit_scope;
+static int g_owner_hit_hooks_installed;
+static DWORD g_owner_hit_queries,g_owner_hit_scoped,g_owner_hit_rejected,g_owner_hit_unmatched;
+typedef DWORD (__attribute__((thiscall)) *PFN_UIHit)(void*,LONG,LONG);
+static PFN_UIHit g_owner_hit_query;
+
 
 /* Phase 2V identifies the finished UIWindow bitmap and every queued tile.
  * CPU helper paint calls are not deferred GPU commands. Keep their old matcher
@@ -2649,6 +2677,7 @@ static void owner_finalize_frame(void) {
         g_owner_input_regions[rn].present=g_ui_present_serial;
         g_owner_input_regions[rn].input_order=st->last_input_order;
         g_owner_input_regions[rn].exact_order=exact_order;
+        g_owner_input_regions[rn].vtable_ptr=st->vtable_ptr;
         g_owner_input_regions[rn].native_size=native_size;
         ++rn;
         if(manager_active) ++manager_regions; else ++grace_regions;
@@ -2664,22 +2693,12 @@ static void owner_finalize_frame(void) {
     g_owner_prev_member_count=n; g_owner_frame_member_count=0;
 }
 
-static int remap_owner_point(POINT* p) {
-    DWORD i,best_input=0,best_exact=0,candidates=0,captured; float px,py,best_ax=0.0f,best_ay=0.0f,best_area=1.0e30f;
-    int found=0,best_has_exact=0,best_native_size=0;
-    if(!p || !g_owner_input_remap_enabled || !g_owner_scale_enabled ||
-       !g_input_enabled || !g_input_runtime_enabled || !g_ui_runtime_enabled) {
-        owner_input_region_lock(); g_owner_capture_object=0; g_owner_capture_root=0;
-        g_owner_capture_native_size=0; owner_input_region_unlock();
-        return 0;
-    }
-    captured=owner_native_capture();
-    if(owner_input_map_capture(p,captured)) return 1;
-    /* Native capture is exclusive. An unresolved capture must not borrow a
-       different window's transform, nor drop into the geometry fallback. */
-    if(captured) return 1;
+static int owner_input_select_region(const POINT* p, OwnerInputRegion* out, DWORD* count) {
+    DWORD i,best_input=0,best_exact=0,candidates=0; float px,py,best_area=1.0e30f;
+    int found=0,best_has_exact=0;
+    if(count) *count=0;
+    if(!p || !out) return 0;
     px=(float)p->x; py=(float)p->y;
-
     owner_input_region_lock();
     for(i=0;i<g_owner_input_region_count;++i) {
         OwnerInputRegion* m=&g_owner_input_regions[i]; UIRectF dst; float area; int has_exact;
@@ -2688,28 +2707,149 @@ static int remap_owner_point(POINT* p) {
         else transform_bounds(&m->rect,m->ax,m->ay,&dst);
         if(!rect_contains_point(&dst,px,py)) continue;
         ++candidates; area=rect_area(&dst); has_exact=m->exact_order?1:0;
-        /* Fresh exact D3D order is the strongest topmost hint. If it is not
-           available, the monotonic scoped-helper input order represents the
-           most recently rendered/submitted UIWindow. */
+        /* Preserve the same visual ordering for both coordinate conversion
+           and the later native root-window hit query. */
         if(!found ||
            (has_exact && !best_has_exact) ||
            (has_exact==best_has_exact && has_exact && m->exact_order>best_exact) ||
            (has_exact==best_has_exact && (!has_exact || m->exact_order==best_exact) && m->input_order>best_input) ||
            (has_exact==best_has_exact && m->exact_order==best_exact && m->input_order==best_input && area<best_area)) {
             found=1; best_has_exact=has_exact; best_exact=m->exact_order; best_input=m->input_order;
-            best_area=area; best_ax=m->ax; best_ay=m->ay;
-            best_native_size=m->native_size;
+            best_area=area; *out=*m;
         }
     }
     owner_input_region_unlock();
+    if(count) *count=candidates;
+    return found;
+}
 
-    g_owner_input_candidates += candidates;
-    if(candidates>1) ++g_owner_input_overlap_hits;
-    if(found) {
-        if(!best_native_size && !owner_input_apply_transform(p,best_ax,best_ay)) return 0;
-        ++g_owner_mapped_mouse; return 1;
+static int remap_owner_point_selected(POINT* p, OwnerHitSelection* hit) {
+    DWORD captured,candidates=0; OwnerInputRegion best; POINT raw;
+    if(hit) hit->valid=0;
+    if(!p || !g_owner_input_remap_enabled || !g_owner_scale_enabled ||
+       !g_input_enabled || !g_input_runtime_enabled || !g_ui_runtime_enabled) {
+        owner_input_region_lock(); g_owner_capture_object=0; g_owner_capture_root=0;
+        g_owner_capture_native_size=0; owner_input_region_unlock();
+        return 0;
     }
-    return 0;
+    captured=owner_native_capture();
+    if(owner_input_map_capture(p,captured)) return 1;
+    /* Native capture stays exclusive and does not use the root hit filter. */
+    if(captured) return 1;
+    raw=*p;
+    if(!owner_input_select_region(p,&best,&candidates)) return 0;
+    g_owner_input_candidates+=candidates;
+    if(candidates>1) ++g_owner_input_overlap_hits;
+    if(!best.native_size && !owner_input_apply_transform(p,best.ax,best.ay)) return 0;
+    if(hit) {
+        hit->region=best; hit->raw=raw; hit->mapped=*p;
+        hit->thread=g_GetCurrentThreadId?g_GetCurrentThreadId():0;
+        hit->valid=hit->thread!=0;
+    }
+    ++g_owner_mapped_mouse;
+    return 1;
+}
+static int remap_owner_point(POINT* p) {
+    return remap_owner_point_selected(p,0);
+}
+
+static void owner_hit_publish(const OwnerHitSelection* hit) {
+    owner_input_region_lock();
+    g_owner_hit_selection=*hit;
+    owner_input_region_unlock();
+}
+static int owner_hit_prepare_scope(LONG x, LONG y, OwnerHitScope* scope) {
+    OwnerHitSelection hit; OwnerInputRegion current; POINT mapped; DWORD thread;
+    scope->valid=0;
+    if(!g_owner_hit_hooks_installed || !g_owner_input_remap_enabled || !g_owner_scale_enabled ||
+       !g_input_enabled || !g_input_runtime_enabled || !g_ui_runtime_enabled ||
+       !g_GetCurrentThreadId || ui_scale_factor()==1.0f || owner_native_capture()) return 0;
+    thread=g_GetCurrentThreadId();
+    owner_input_region_lock(); hit=g_owner_hit_selection; owner_input_region_unlock();
+    if(!hit.valid || hit.thread!=thread || hit.mapped.x!=x || hit.mapped.y!=y) return 0;
+    /* Mouse-down can reuse a sample without another WM_MOUSEMOVE. Expiring or
+       consuming the sample here would reintroduce missed stationary clicks.
+       Instead revalidate its target against the fresh copied visual snapshot. */
+    if(!owner_input_select_region(&hit.raw,&current,0) ||
+       current.object_ptr!=hit.region.object_ptr || current.vtable_ptr!=hit.region.vtable_ptr) return 0;
+    /* This is only an identity check before native dispatch. Bounds and input
+       ownership still come from copied records, never a live tree walk. */
+    if(!mem_readable((void*)(ULONG_PTR)current.object_ptr,4) ||
+       *(DWORD*)(ULONG_PTR)current.object_ptr!=current.vtable_ptr) return 0;
+    mapped=hit.raw;
+    if(!current.native_size && !owner_input_apply_transform(&mapped,current.ax,current.ay)) return 0;
+    if(mapped.x!=x || mapped.y!=y) return 0;
+    scope->target=current.object_ptr; scope->vtable_ptr=current.vtable_ptr;
+    scope->thread=thread; scope->x=x; scope->y=y; scope->valid=1;
+    return 1;
+}
+static DWORD __attribute__((thiscall)) owner_hit_query_scoped(void* self, LONG x, LONG y) {
+    OwnerHitScope saved,next={0}; DWORD rv=0;
+    ++g_owner_hit_queries;
+    if(owner_hit_prepare_scope(x,y,&next)) ++g_owner_hit_scoped;
+    else ++g_owner_hit_unmatched;
+    owner_input_region_lock(); saved=g_owner_hit_scope; g_owner_hit_scope=next; owner_input_region_unlock();
+    if(g_owner_hit_query) rv=g_owner_hit_query(self,x,y);
+    owner_input_region_lock(); g_owner_hit_scope=saved; owner_input_region_unlock();
+    return rv;
+}
+static int owner_hit_reject_candidate(DWORD obj, DWORD vt, LONG x, LONG y) {
+    DWORD i; int reject=0; OwnerHitScope scope;
+    owner_input_region_lock(); scope=g_owner_hit_scope; owner_input_region_unlock();
+    if(!scope.valid || !g_GetCurrentThreadId || scope.thread!=g_GetCurrentThreadId() ||
+       scope.x!=x || scope.y!=y || obj==scope.target) return 0;
+    /* Only filter a current, identified root owned by our visual snapshot.
+       Unknown windows and native modal/child/capture logic keep their rules. */
+    owner_input_region_lock();
+    for(i=0;i<g_owner_input_region_count;++i) {
+        OwnerInputRegion* r=&g_owner_input_regions[i];
+        if(r->object_ptr==obj && r->vtable_ptr==vt && g_ui_present_serial-r->present<=2) {
+            reject=1; break;
+        }
+    }
+    owner_input_region_unlock();
+    if(reject) ++g_owner_hit_rejected;
+    return reject;
+}
+static DWORD __attribute__((thiscall)) owner_hit_candidate(void* self, LONG x, LONG y) {
+    void** vt; PFN_UIHit original;
+    if(!self || !mem_readable(self,4)) return 0;
+    vt=*(void***)self;
+    if(!vt || !mem_readable((BYTE*)vt+0xb8,4)) return 0;
+    original=(PFN_UIHit)vt[0xb8/4];
+    if(owner_hit_reject_candidate((DWORD)(ULONG_PTR)self,(DWORD)(ULONG_PTR)vt,x,y)) return 0;
+    return original?original(self,x,y):0;
+}
+static int owner_hit_candidate_span_valid(void) {
+    BYTE* p;
+    if(!g_exe || g_exe_size<PRM_UI_HIT_CANDIDATE_RVA+6) return 0;
+    p=(BYTE*)g_exe+PRM_UI_HIT_CANDIDATE_RVA;
+    return p[0]==0xff && p[1]==0x90 && p[2]==0xb8 && !p[3] && !p[4] && !p[5];
+}
+static int owner_hit_patch_candidate(void) {
+    BYTE* p=(BYTE*)g_exe+PRM_UI_HIT_CANDIDATE_RVA; DWORD oldp=0,tmp=0;
+    if(!owner_hit_candidate_span_valid() || !g_VirtualProtect || !g_FlushInstructionCache ||
+       !g_VirtualProtect(p,6,PAGE_EXECUTE_READWRITE,&oldp)) return 0;
+    p[0]=0xe8; *(DWORD*)(p+1)=(DWORD)((BYTE*)owner_hit_candidate-(p+5)); p[5]=0x90;
+    g_FlushInstructionCache((HANDLE)(ULONG_PTR)-1,p,6);
+    g_VirtualProtect(p,6,oldp,&tmp);
+    return 1;
+}
+static void install_owner_hit_hooks(void) {
+    BYTE* base=(BYTE*)g_exe;
+    if(!g_owner_bitmap_hooks_installed || g_owner_hit_hooks_installed) return;
+    if(!g_GetCurrentThreadId || !g_FlushInstructionCache || !owner_hit_candidate_span_valid() ||
+       !validated_rel_call(PRM_UI_HIT_EVENT_CALL_RVA,PRM_UI_HIT_EVENT_TARGET_RVA) ||
+       !validated_rel_call(PRM_UI_HIT_MOUSE_CALL_RVA,PRM_UI_HIT_MOUSE_TARGET_RVA)) {
+        log_line("OwnerHit hooks: opcode/target/API mismatch"); return;
+    }
+    g_owner_hit_query=(PFN_UIHit)(base+PRM_UI_HIT_EVENT_TARGET_RVA);
+    if(owner_hit_patch_candidate() &&
+       owner_submit_patch_rel_call(base+PRM_UI_HIT_EVENT_CALL_RVA,(void*)owner_hit_query_scoped) &&
+       owner_submit_patch_rel_call(base+PRM_UI_HIT_MOUSE_CALL_RVA,(void*)owner_hit_query_scoped)) {
+        g_owner_hit_hooks_installed=1;
+        log_line("OwnerHit hooks: OK query=2 candidate=1");
+    } else log_line("OwnerHit hooks: patch failed; selection filter disabled");
 }
 
 static DWORD owner_submit_hist_sum(DWORD first, DWORD last) {
@@ -2739,7 +2879,7 @@ static void maybe_dump_owner_windows(void) {
     OwnerInputRegion active[64];
     if(!g_owner_submit_enabled) return;
     if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_OWNER_DIAGNOSTICS); if(!(k&1)) return;
-    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 2Z present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 3A present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
     s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
     s_append(line,sizeof(line)," ownerMouse="); s_append_uint(line,sizeof(line),g_owner_mapped_mouse);
@@ -2799,6 +2939,12 @@ static void maybe_dump_owner_windows(void) {
     s_append(line,sizeof(line)," unowned="); s_append_uint(line,sizeof(line),g_owner_bitmap_unowned); log_line(line);
     log_uint(" MapOverlay draws=",g_owner_map_draws);
     log_uint(" Minimap draws=",g_owner_minimap_draws);
+    line[0]=0; s_append(line,sizeof(line)," OwnerHit hooks="); s_append_uint(line,sizeof(line),(DWORD)g_owner_hit_hooks_installed);
+    s_append(line,sizeof(line)," queries="); s_append_uint(line,sizeof(line),g_owner_hit_queries);
+    s_append(line,sizeof(line)," scoped="); s_append_uint(line,sizeof(line),g_owner_hit_scoped);
+    s_append(line,sizeof(line)," rejected="); s_append_uint(line,sizeof(line),g_owner_hit_rejected);
+    s_append(line,sizeof(line)," unmatched="); s_append_uint(line,sizeof(line),g_owner_hit_unmatched); log_line(line);
+
     line[0]=0; s_append(line,sizeof(line)," UIFilter crisp="); s_append_uint(line,sizeof(line),(DWORD)g_ui_sharp_filter);
     s_append(line,sizeof(line)," draws="); s_append_uint(line,sizeof(line),g_ui_sharp_draws);
     s_append(line,sizeof(line)," failures="); s_append_uint(line,sizeof(line),g_ui_sharp_failures); log_line(line);
@@ -3368,7 +3514,7 @@ static void ui_present_boundary(const char* method) {
         log_line(line);
     }
     if(g_owner_submit_enabled && g_ui_present_serial>0 && (g_ui_present_serial%1200UL)==0) {
-        line[0]=0; s_append(line,sizeof(line),"2Z heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+        line[0]=0; s_append(line,sizeof(line),"3A heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
         s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
         s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
@@ -3548,20 +3694,22 @@ static int remap_ui_point(POINT* p) {
 }
 
 static BOOL WINAPI hook_ScreenToClient(HWND hwnd, POINT* p) {
-    BOOL ok; DWORD caller_rva;
+    BOOL ok; DWORD caller_rva=ptr_to_rva(__builtin_return_address(0));
+    OwnerHitSelection hit={0}; int primary=caller_rva==PRM_UI_MOUSE_RETURN_RVA;
     maybe_toggle_ui_input(); maybe_toggle_world_input(); maybe_dump_ui_groups(); maybe_dump_owner_windows(); vtrace_poll_hotkey();
+    if(primary) owner_hit_publish(&hit);
     if(!g_real_ScreenToClient) return FALSE;
     ok=g_real_ScreenToClient(hwnd,p);
     if(ok) {
-        caller_rva=ptr_to_rva(__builtin_return_address(0));
-        if(caller_rva==0x00495BE1UL) {
-            g_input_hwnd=hwnd;
-        }
-        if(g_owner_input_remap_enabled) { if(!remap_owner_point(p)) remap_ui_point(p); }
-        else remap_ui_point(p);
+        if(primary) g_input_hwnd=hwnd;
+        if(g_owner_input_remap_enabled) {
+            if(!remap_owner_point_selected(p,primary?&hit:0)) remap_ui_point(p);
+        } else remap_ui_point(p);
+        if(primary) owner_hit_publish(&hit);
     }
     return ok;
 }
+
 static void install_input_hooks(void) {
     HMODULE exe=g_GetModuleHandleA?g_GetModuleHandleA(0):0;
     HMODULE u32=find_loaded_module("user32.dll"); int a=0;
@@ -3748,7 +3896,7 @@ static void install_phase2_hooks(void) {
     if(!g_exe) return;
     ok=patch_import(g_exe,"DDRAW.dll","DirectDrawCreateEx",(void*)hook_DirectDrawCreateEx,(void**)&g_real_DirectDrawCreateEx);
     log_line(ok ? "DirectDrawCreateEx IAT hook: OK" : "DirectDrawCreateEx IAT hook: NOT FOUND");
-    if(ok) log_line("Phase 2Z renderer armed: all-window owner UI + isolated world input");
+    if(ok) log_line("Phase 3A renderer armed: all-window owner UI + isolated world input");
 }
 
 /* ---------- real WINMM ---------- */
@@ -3780,7 +3928,7 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Phase 2Z Complete Minimap Ownership ===");
+    log_line("=== PRM UI FIX Phase 3A Native UI Hit Ownership ===");
     log_line("Proxy DLL loaded");
     if (g_GetPrivateProfileIntA) {
         g_font_enabled = (int)g_GetPrivateProfileIntA("Font", "Enabled", 1, g_ini_path);
@@ -3925,10 +4073,11 @@ static void initialize_mod(void) {
     install_world_input_hook();
     install_cursor_hooks();
     install_owner_bitmap_hooks();
+    install_owner_hit_hooks();
     owner_submit_install_hooks();
     vtrace_install_submit_hooks();
     vtrace_install_active_vtables();
-    log_line("Phase 2Z armed: F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
+    log_line("Phase 3A armed: F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
     log_line("Initialization complete");
 }
 

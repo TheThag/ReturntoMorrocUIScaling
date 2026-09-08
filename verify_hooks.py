@@ -14,6 +14,8 @@ import sys
 
 
 HOOKS = (
+    ("UI event hit query", "PRM_UI_HIT_EVENT", 0x001F862C, 0x001FA1A0),
+    ("UI mouse hit query", "PRM_UI_HIT_MOUSE", 0x00209FCE, 0x001FA1A0),
     ("World ray", "PRM_WORLD_RAY", 0x00334568, 0x000A1540),
     ("Cursor draw", "PRM_CURSOR_DRAW", 0x00227B7B, 0x00227BC0),
     ("Sprite submit", "PRM_SPRITE_SUBMIT", 0x00227FD9, 0x000A0550),
@@ -40,6 +42,17 @@ BITMAP_PATCHES = (
      bytes.fromhex("ff 53 28 8b 5d dc")),
     ("Alternate window bitmap", "PRM_BITMAP_ALTERNATE_RVA", 0x0020BAA3,
      bytes.fromhex("ff 53 0c 8b 5d dc")),
+)
+
+# Replace only the manager's root candidate call, preserving the original
+# per-window +B8 virtual method and its recursive child/control hit tests.
+INPUT_PATCHES = (
+    ("Native UI root hit candidate", "PRM_UI_HIT_CANDIDATE_RVA", 0x001FA1C2,
+     bytes.fromhex("ff 90 b8 00 00 00")),
+)
+INPUT_RETURNS = (
+    ("Central mouse ScreenToClient", "PRM_UI_MOUSE_RETURN_RVA", 0x00495BE1,
+     bytes.fromhex("ff 15 70 74 d0 00")),
 )
 
 # These return addresses identify the direct D3D calls used to assemble a
@@ -166,7 +179,8 @@ def main():
                     failures.append(f"{name}: source differs from validated executable manifest")
             except ValueError as error:
                 failures.append(str(error))
-    for entries, is_return in ((BITMAP_PATCHES, False), (OFFSCREEN_RETURNS, True)):
+    for entries, is_return in ((BITMAP_PATCHES, False), (INPUT_PATCHES, False),
+                              (OFFSCREEN_RETURNS, True), (INPUT_RETURNS, True)):
         for label, name, rva, expected_bytes in entries:
             code_rva = rva - len(expected_bytes) if is_return else rva
             try:
@@ -201,7 +215,8 @@ def main():
     if failures:
         return 1
     print(f"PASS: {len(HOOKS)} direct callsites, {len(BITMAP_PATCHES)} bitmap patch spans, "
-          f"{len(OFFSCREEN_RETURNS)} offscreen return sites, source RVAs, and viewport fields match.")
+          f"{len(INPUT_PATCHES)} input patch span, {len(OFFSCREEN_RETURNS)} offscreen returns, "
+          f"{len(INPUT_RETURNS)} mouse return, source RVAs, and viewport fields match.")
     return 0
 
 

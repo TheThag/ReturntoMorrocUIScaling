@@ -1,7 +1,48 @@
 # PRM UI FIX implementation notes
 
-Phase 2Z. These notes describe the native client paths and the implemented
+Phase 3A. These notes describe the native client paths and the implemented
 ownership rules. For installation and settings, see [README](../README.md).
+
+## Native hit ownership
+
+The incident log at 200% records `UIBasicInfoWnd` at native (80,902), size
+220x134, anchor (0,1440), and `UINewChatWnd` at (0,827), size 600x250, anchor
+(0,720). Basic Info displays at (160,364)..(600,632); chat displays below it,
+at (0,934)..(1200,1434). A Basic Info click at (300,450) converts to (150,945),
+which also lies in chat's original rectangle.
+
+Both classes use native hit method B217C0 through vtable slot +B8. That method
+checks an enabled rectangle, descends through children, then returns a child or
+root. `UIMenuIconWnd` uses its own ACF590 override. UIWindowMgr's 5FA1A0 selects
+from native list +174, then updates hover IDs and invokes enter/leave callbacks.
+Discarding the visually chosen owner before that scan allows another root to
+steal the converted point.
+
+Two narrow calls (5F862C event routing and 609FCE uncaptured input) now scope the
+native query. The root candidate call at 5FA1C2 changes from the six-byte virtual
+call to a relative wrapper call plus NOP. The wrapper calls each admitted root's
+original +B8 method. Identified, current competing roots are skipped only for a
+matching chosen input sample; unknown roots retain native behavior. All native
+child recursion, return values, hover callbacks and later modal restrictions
+remain in the original manager. The +194 capture branch remains untouched.
+Selection and rejection use object identity and copied regions, with no window
+class-name conditions. The same path handles every tracked interactive root,
+including roots whose original virtual hit method differs from B217C0.
+
+ScreenToClient at return 895BE1 refreshes the native point on WM_MOUSEMOVE;
+button events can reuse that point for many frames. A copied raw/mapped sample,
+owner identity and thread therefore persist until the next central mouse sample.
+Each query requires matching thread and coordinates, a fresh copied owner
+region, the same current visual winner and transform, and the owner's original
+vtable. A four-byte identity check is the only added live owner read; bounds and
+ownership use copied snapshots. Missing/stale/reused records, disabled scaling,
+capture and unrelated coordinates forward normally. Samples from other
+ScreenToClient callers do not overwrite this native mouse record.
+
+The new hooks validate original call targets and bytes, flush the instruction
+cache, and keep filtering disabled after partial installation. No shared method
+entry, game window position or vtable is rewritten. F8 adds `OwnerHit` queries,
+scoped queries, rejected competing candidates and unmatched query counts.
 
 ## Compact minimap
 

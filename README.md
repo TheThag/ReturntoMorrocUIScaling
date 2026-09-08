@@ -3,10 +3,31 @@
 A 32-bit WinMM proxy that enlarges Return to Morroc's interface while keeping
 window contents, mouse interaction and character movement aligned.
 
-The current build is **Phase 2Z**. It includes complete-window scaling, topmost
+The current test build is **Phase 3A**. It includes complete-window scaling, topmost
 window input, dragging, attached NPC descriptions, player chat-room titles,
 character hover names, fullscreen map region previews and the compact minimap.
 The game executable is left unchanged on disk.
+
+## Window click fix in Phase 3A
+
+At 200% scale, Basic Info and chat can look separate while their original
+rectangles overlap. The previous code converted the mouse position for the
+visible Basic Info window, then the native hit test could give that point to
+chat. Basic Info consequently appeared stuck.
+
+Phase 3A carries the selected window through the native root hit test. Other
+identified roots cannot take that window's converted point. This applies to
+every tracked input window without checking its name or class. The game still
+finds its own child controls and runs its normal hover, modal and capture logic.
+The cached mouse sample is revalidated against current input regions, so clicks
+also work after the pointer has stopped moving.
+
+The focused in-game check is pending: restart with the existing 200% settings,
+click Basic Info and its menu icons with chat open, pause the pointer before
+clicking, and try dragging the panel. Also click and drag overlapping inventory,
+equipment and skill windows to check the same behavior across windows. Press F8
+afterward. This build is being
+tested locally on `fix/basic-info-input`; the published `main` build is Phase 2Z.
 
 ## Compatibility
 
@@ -111,7 +132,7 @@ argument forwarding. They do not launch the game.
 For a runtime report, press F8 in-game and inspect the generated log:
 
 ```sh
-python3 audit_phase2z.py /path/to/prm-ui-fix.log
+python3 audit_phase3a.py /path/to/prm-ui-fix.log
 ```
 
 The auditor reports missing samples as REVIEW. A successful diagnostic audit

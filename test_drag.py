@@ -354,13 +354,13 @@ def main():
     args = parser.parse_args()
     source = args.source.read_text()
     types = "\n".join(extract_type(source, name) for name in (
-        "OwnerWindowState", "OwnerInputRegion", "OwnerCaptureLink", "OwnerBitmapScope"))
+        "OwnerWindowState", "OwnerInputRegion", "OwnerCaptureLink", "OwnerBitmapScope", "OwnerHitSelection"))
     functions = "\n".join(extract_function(source, name) for name in (
         "s_len", "s_contains", "s_equal", "owner_class_is_hover_popup",
         "owner_class_is_world_label", "owner_class_is_world_title", "owner_class_is_world_name", "rect_is_global", "choose_group_anchor",
         "owner_input_touch_state", "owner_bitmap_prepare",
         "rect_contains_point", "rect_area", "transform_bounds", "owner_input_apply_transform",
-        "owner_input_map_capture", "remap_owner_point"))
+        "owner_input_map_capture", "owner_input_select_region", "remap_owner_point_selected", "remap_owner_point"))
     with tempfile.TemporaryDirectory(prefix="prm-drag-test-") as directory:
         harness = Path(directory) / "drag.c"
         binary = Path(directory) / "drag-test"
