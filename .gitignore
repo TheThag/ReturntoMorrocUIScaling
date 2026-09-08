@@ -7,9 +7,8 @@ __pycache__/
 *.py[cod]
 *.log
 
-# Keep only the tested project DLL in version control
+# Compiled binaries are distributed through GitHub Releases
 *.dll
-!/winmm.dll
 *.exe
 
 # Local development history and manual-test evidence

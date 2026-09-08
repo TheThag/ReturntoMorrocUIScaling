@@ -1,6 +1,6 @@
 # PRM UI FIX implementation notes
 
-Phase 3C. These notes describe the native client paths and the implemented
+Version 1.0. These notes describe the native client paths and the implemented
 ownership rules. For installation and settings, see [README](../README.md).
 
 ## Screen bounds and live settings
@@ -37,11 +37,17 @@ and hover names retain their accepted actor attachment rules. Native-size
 fullscreen UI remains under its previous policy rather than the movable-window
 fit policy. The geometry fallback is unchanged.
 
-F2 toggles a settings panel drawn into the game frame. The existing game HWND
+The configured overlay shortcut (Shift+P by default) toggles a settings panel drawn into the game frame. The existing game HWND
 receives a subclass that queues keyboard commands. The present thread owns the
 menu state and applies changes after native capture ends. No window is created
 and no focus/activation or display-mode API is called. Enter applies; S saves
 and closes, writing only ScalePercent, Enabled, SharpFilter and KeepOnScreen.
+
+Keybinds are loaded from the INI at startup. The game window procedure matches
+exact modifier chords and queues each configured action once per press. Blank
+bindings pass through to the game. Shortcut repeats and their generated text
+are consumed, and focus loss clears held-key tracking. Panel navigation remains
+arrows, Enter, S and Esc; Alt+F4 preserves the native close command.
 
 DirectDraw surface GetDC/ReleaseDC bracket GDI drawing after the native frame
 has been composed and before presentation. The DC state and selected objects
@@ -51,7 +57,7 @@ The DLL keeps dynamic API resolution and empty import directories. Host tests
 exercise the 32-bit stdcall ABI and resource cleanup; they do not establish
 actual Wine appearance or display-driver support.
 
-F8 adds live UISettings and each input owner's fit percentage, correction offset
+DumpDiagnostics adds live UISettings and each input owner's fit percentage, correction offset
 and displayed rectangle. The bounds auditor checks the newest run/sample and
 distinguishes diagnostic coverage from the user's interaction result.
 
@@ -100,7 +106,7 @@ become a miss implicitly; that stale selection follows the existing bypass.
 
 The new hooks validate original call targets and bytes, flush the instruction
 cache, and keep filtering disabled after partial installation. No shared method
-entry, game window position or vtable is rewritten. F8 adds `OwnerHit` queries,
+entry, game window position or vtable is rewritten. DumpDiagnostics adds `OwnerHit` queries,
 scoped queries, rejected competing candidates and unmatched query counts.
 
 ## Transient explanations and player gauge
@@ -149,7 +155,7 @@ The manager's other background protocol calls virtual +9C followed by +A0.
 UINewChatWnd uses that second path: +A0 (579EC0) emits multiple rectangles
 through 492660. Phase 3E scopes the shared +A0 dispatch at 60BA14 using the
 window's actual vtable target. Those rectangles now receive the same owner as
-its cached bitmap, including while the native chat dimensions change. The F8
+its cached bitmap, including while the native chat dimensions change. The DumpDiagnostics
 reproduction showed the unowned inner chat background using anchor (0,1440)
 while the chat itself retained (0,720), producing a 720px separation at 200%.
 
@@ -188,7 +194,7 @@ controls share the same complete-window transform. Native zoom still changes
 the map contents; UI scaling enlarges the whole display. The existing copied
 input region and child capture map the enlarged controls back to their native
 coordinates. The original scene object and all queued source vertices are
-preserved. F8 records `Minimap draws` and the minimap owner region.
+preserved. DumpDiagnostics records `Minimap draws` and the minimap owner region.
 
 The fix uses the narrow scene call at VA 74024D and the image/direction queues
 at 62835F/7325C4. It adds no global drawing hook or original-executable edit.
@@ -206,7 +212,7 @@ Native placement at VA 73D3D0 supports several layout modes and viewport clamps.
 Keeping the bitmap center fixed preserves that placement without reproducing
 actor projection or changing its layout. These labels have no pointer tail.
 Their text, outlines, and emblems enlarge together. Names remain passive:
-no mouse regions or capture-tree aliases are published for them. F8 includes
+no mouse regions or capture-tree aliases are published for them. DumpDiagnostics includes
 name class, position, size, anchor, and inputOrder=0 in its visual-only records.
 
 ## NPC service plaques
@@ -249,7 +255,7 @@ without increasing either limit. Recently drawn root objects must still have
 their saved vtable before their children are read, matching input publication's
 existing identity check. This rejects unreadable or changed root objects.
 
-F8 distinguishes `capacityLimits`, `walkLimits`, rejected `staleRoots`, and the
+DumpDiagnostics distinguishes `capacityLimits`, `walkLimits`, rejected `staleRoots`, and the
 peak number of copied links. Up to four limit events include the exact root,
 object, list node, and frame. The first Phase 2W test had one undifferentiated
 overflow; the next run had zero. These fixes are covered by reproductions, but
@@ -281,7 +287,7 @@ scope, so native state-block changes are respected.
 
 Crisp mode removes interpolation softness. It cannot add detail missing from
 source bitmaps, and pixel widths can look uneven at a noninteger scale such as
-133%. F3 switches between crisp and the game's original filtering without
+133%. ToggleFiltering switches between crisp and the game's original filtering without
 changing layout, font metrics, UI scale, or mouse mapping. The user's Phase 2W
 comparison favored native smoothing, which now starts enabled
 (`UI.SharpFilter=0`). Set it to 1 to start in crisp mode. `Font.AddSize=0`

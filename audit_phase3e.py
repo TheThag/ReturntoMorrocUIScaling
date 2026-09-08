@@ -6,14 +6,14 @@ import sys
 
 
 def audit(text):
-    runs = list(re.finditer(r'^=== PRM .* Phase (\S+).*$', text, re.M))
-    if not runs or runs[-1][1] not in ('3E', '3F'):
-        return 2, ['REVIEW: The newest run is not Phase 3E or 3F.']
+    runs = list(re.finditer(r'^=== PRM .* (?:Phase|Version) (\S+).*$', text, re.M))
+    if not runs or runs[-1][1] not in ('3E', '3F', '1.0'):
+        return 2, ['REVIEW: The newest run is not UI FIX 1.0 or Phase 3E/3F.']
     phase = runs[-1][1]
     run = text[runs[-1].start():]
-    samples = list(re.finditer(r'^OWNER INPUT ' + phase + r' .*$', run, re.M))
+    samples = list(re.finditer(r'^OWNER INPUT ' + re.escape(phase) + r' .*$', run, re.M))
     if not samples:
-        return 1, ['REVIEW: No F8 snapshot in the newest run.']
+        return 1, ['REVIEW: No DumpDiagnostics snapshot in the newest run.']
     sample = run[samples[-1].start():]
     issues, owners, settings, hit = [], [], None, None
     for line in sample.splitlines():
@@ -62,11 +62,11 @@ def audit(text):
             issues.append('Invalid or out-of-screen input region: ' + name)
     if not checked:
         issues.append('No ordinary fitted input window was observed.')
-    lines = ['Phase ' + phase + ' bounds audit: ' + str(len(checked)) + ' fitted windows checked.']
+    lines = ['UI FIX ' + phase + ' bounds audit: ' + str(len(checked)) + ' fitted windows checked.']
     lines += ['REVIEW: ' + issue for issue in dict.fromkeys(issues)]
     if not issues:
         lines.append('PASS: sampled window bounds fit the screen and native input ownership is active.')
-    lines.append('Tooltip placement still requires the user result.')
+    lines.append('Visual placement and interaction also require in-game checking.')
     return int(bool(issues)), lines
 
 

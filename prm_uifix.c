@@ -1,11 +1,11 @@
 /*
- * PRM UI FIX - Phase 3F tooltip placement before native screen clipping
+ * PRM UI FIX 1.0 - window ownership, scaling and configurable shortcuts
  * 32-bit WINMM proxy for Return to Morroc PRM.exe
  *
- * Goals for Phase 2F:
+ * Runtime integration:
  *   - leave PRM.exe untouched
  *   - load automatically as winmm.dll
- *   - forward the four WINMM functions PRM imports
+ *   - export 185 WINMM names and forward to the system library
  *   - write prm-ui-fix.log beside the DLL
  *   - read prm-ui-fix.ini
  *   - install version-independent IAT hooks for CreateFontA/CreateFontIndirectA
@@ -76,14 +76,6 @@ typedef struct _LOGFONTA {
 #define PAGE_NOACCESS 0x01
 #define PAGE_GUARD 0x100
 #define MEM_COMMIT 0x1000
-#define VK_UI_SETTINGS       0x71 /* F2 */
-#define VK_TRACE_CAPTURE     0x73 /* F4 */
-#define VK_UI_SHARP          0x72 /* F3 */
-#define VK_UI_SCALE          0x74 /* F5 */
-#define VK_UI_INPUT          0x75 /* F6 */
-#define VK_UI_GROUP_DUMP     0x76 /* F7 */
-#define VK_OWNER_DIAGNOSTICS 0x77 /* F8 */
-#define VK_WORLD_INPUT       0x78 /* F9 */
 #define PRM_WORLD_RAY_CALL_RVA      0x00334568UL
 #define PRM_WORLD_RAY_TARGET_RVA    0x000A1540UL
 #define PRM_CURSOR_DRAW_CALL_RVA    0x00227B7BUL
@@ -177,7 +169,6 @@ typedef BOOL    (WINAPI *PFN_CloseHandle)(HANDLE);
 typedef DWORD   (WINAPI *PFN_GetTickCount)(void);
 typedef BOOL    (WINAPI *PFN_DisableThreadLibraryCalls)(HMODULE);
 
-typedef short   (WINAPI *PFN_GetAsyncKeyState)(int);
 typedef BOOL    (WINAPI *PFN_ScreenToClient)(HWND, POINT*);
 typedef BOOL    (WINAPI *PFN_GetCursorPos)(POINT*);
 typedef BOOL    (WINAPI *PFN_GetClientRect)(HWND, RECT*);
@@ -199,7 +190,6 @@ static PFN_CloseHandle g_CloseHandle;
 static PFN_GetTickCount g_GetTickCount;
 static PFN_DisableThreadLibraryCalls g_DisableThreadLibraryCalls;
 
-static PFN_GetAsyncKeyState g_GetAsyncKeyState;
 static PFN_ScreenToClient g_real_ScreenToClient;
 static PFN_GetCursorPos g_GetCursorPos;
 static PFN_GetClientRect g_GetClientRect;
@@ -610,9 +600,7 @@ static void bootstrap_kernel32(void) {
     g_GetCurrentThreadId = (PFN_GetCurrentThreadId)resolve_export(k32, "GetCurrentThreadId");
     g_DisableThreadLibraryCalls = (PFN_DisableThreadLibraryCalls)resolve_export(k32, "DisableThreadLibraryCalls");
     {
-        HMODULE u32 = find_loaded_module("user32.dll");
         HMODULE nt = find_loaded_module("ntdll.dll");
-        if (u32) g_GetAsyncKeyState = (PFN_GetAsyncKeyState)resolve_export(u32, "GetAsyncKeyState");
         if (nt) g_RtlCaptureStackBackTrace = (PFN_RtlCaptureStackBackTrace)resolve_export(nt, "RtlCaptureStackBackTrace");
     }
 }
@@ -648,6 +636,8 @@ static void log_raw(const char* s) {
 static void log_line(const char* s) {
     log_raw(s); log_raw("\r\n");
 }
+
+#include "ui_hotkeys.h"
 
 static void log_uint(const char* label, DWORD v) {
     char buf[64];
@@ -963,7 +953,7 @@ static void install_device_hooks(void* obj) {
     e=patch_vtable_slot(vt,31,(void*)hook_DrawPrimitiveVB,&r->orig_draw_vb);
     f=patch_vtable_slot(vt,32,(void*)hook_DrawIndexedPrimitiveVB,&r->orig_draw_indexed_vb);
     g=patch_vtable_slot(vt,35,(void*)hook_SetTexture,&r->orig_set_texture);
-    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 3F owner UI + isolated world input)");
+    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (1.0 owner UI + isolated world input)");
     else log_line("Direct3DDevice7 hooks: PARTIAL/FAILED");
 }
 
@@ -1049,13 +1039,11 @@ static void reset_draw_stats(void) {
 }
 
 static void maybe_start_capture(void) {
-    short k;
-    if(!g_trace_enabled || !g_GetAsyncKeyState || !g_GetTickCount) return;
-    k=g_GetAsyncKeyState(VK_TRACE_CAPTURE);
-    if((k & 1) && !g_capture_active) {
+    if(!g_trace_enabled || !g_GetTickCount) return;
+    if(ui_hotkey_take(UIHK_TRACE) && !g_capture_active) {
         trace_lock(); reset_draw_stats(); g_capture_active=1; ++g_capture_serial;
         g_capture_until=g_GetTickCount()+g_trace_capture_ms; trace_unlock();
-        log_line("--- UI TRACE CAPTURE START (F4) ---");
+        log_line("--- UI TRACE CAPTURE START ---");
     }
 }
 
@@ -1298,20 +1286,6 @@ static void owner_finish_capture(void) {
     }
     log_line("--- END OWNER TRACE ---");
 }
-
-static void maybe_owner_trace(void) {
-    short k; DWORD now;
-    if(!g_owner_trace_enabled || !g_GetAsyncKeyState || !g_GetTickCount) return;
-    k=g_GetAsyncKeyState(VK_OWNER_DIAGNOSTICS); now=g_GetTickCount();
-    if(k&1) {
-        if(g_owner_capture_active) owner_finish_capture();
-        owner_reset(); ++g_owner_capture_serial; g_owner_capture_active=1; g_owner_capture_until=now+g_owner_trace_ms;
-        { char line[128]; line[0]=0;s_append(line,sizeof(line),"--- OWNER TRACE START #");s_append_uint(line,sizeof(line),g_owner_capture_serial);s_append(line,sizeof(line)," (F8) ---");log_line(line); }
-        owner_dump_manager_lists();
-    }
-    if(g_owner_capture_active && (LONG)(now-g_owner_capture_until)>=0) owner_finish_capture();
-}
-
 
 static void ui_group_lock(void) {
     while (__atomic_exchange_n(&g_ui_group_lock, 1, __ATOMIC_ACQUIRE)) __asm__ volatile("pause");
@@ -2426,7 +2400,7 @@ static void owner_popup_offset(OwnerWindowState* st,LONG x,LONG y,float* dx,floa
 }
 
 /* Record a bounded sample at appearance, including reentry after a popup was
- * absent. A later F8 snapshot alone cannot show the first displayed frame. */
+ * absent. A later diagnostics snapshot alone cannot show the first displayed frame. */
 static void owner_popup_trace_first(OwnerWindowState* st) {
     static DWORD samples; OwnerHitSelection hit; DWORD bound_source=0; LONG requested_x=0,requested_y=0; char line[512];
     if(samples>=24 || !st || !owner_class_is_hover_popup(st->class_name) ||
@@ -3052,7 +3026,7 @@ static void owner_capture_note_limit(DWORD reason, DWORD root, DWORD obj, DWORD 
     ++g_owner_capture_link_overflow;
     if(reason==3) ++g_owner_capture_walk_limits; else ++g_owner_capture_capacity_limits;
     /* Preserve the first offending objects without adding per-frame log I/O.
-       F8 retains cumulative counts after this small event budget is exhausted. */
+       DumpDiagnostics retains cumulative counts after this small event budget is exhausted. */
     if(g_owner_capture_link_overflow>4) return;
     line[0]=0; s_append(line,sizeof(line),"OwnerCapture limit reason=");
     s_append(line,sizeof(line),reason==1?"aliases":reason==2?"pending":"siblings");
@@ -3552,11 +3526,11 @@ static void owner_submit_log_age_hist(void) {
 }
 
 static void maybe_dump_owner_windows(void) {
-    short k; DWORD i,nactive=0,npopup=0; char line[512];
+    DWORD i,nactive=0,npopup=0; char line[512];
     static OwnerInputRegion active[64];
     if(!g_owner_submit_enabled) return;
-    if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_OWNER_DIAGNOSTICS); if(!(k&1)) return;
-    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 3F present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+    if(!ui_hotkey_take(UIHK_DIAGNOSTICS)) return;
+    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 1.0 present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
     s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
     s_append(line,sizeof(line)," ownerMouse="); s_append_uint(line,sizeof(line),g_owner_mapped_mouse);
@@ -3706,7 +3680,7 @@ static void maybe_dump_owner_windows(void) {
  * rendering: window methods enqueue sprites/rects and the renderer flushes
  * them later.  Phase 2I therefore traces a safe range of real virtual slots
  * with transparent x86 return trampolines and also counts three candidate UI
- * submission helpers while each slot is active.  F8 starts a 2-second
+ * submission helpers while each slot is active.  CaptureVirtualTrace starts a configured-duration
  * capture.  The 2F visual scaler remains the playable fallback.
  */
 #define VTRACE_SLOT_COUNT 40
@@ -3998,14 +3972,13 @@ static void vtrace_maybe_finish(void) {
 }
 
 static void vtrace_poll_hotkey(void) {
-    short k; char line[160]; DWORD now;
-    if(!g_vtrace_enabled || !g_GetAsyncKeyState || !g_GetTickCount) return;
-    k=g_GetAsyncKeyState(VK_OWNER_DIAGNOSTICS);
-    if((k&1) && !g_vtrace_capture_active) {
+    char line[160]; DWORD now;
+    if(!g_vtrace_enabled || !g_GetTickCount) return;
+    if(ui_hotkey_take(UIHK_VIRTUAL_TRACE) && !g_vtrace_capture_active) {
         vtrace_install_active_vtables(); vtrace_install_submit_hooks(); vtrace_reset_counts();
         now=g_GetTickCount(); g_vtrace_capture_until=now+g_vtrace_capture_ms; ++g_vtrace_capture_serial; g_vtrace_capture_active=1;
         line[0]=0; s_append(line,sizeof(line),"--- VIRTUAL TRACE START #"); s_append_uint(line,sizeof(line),g_vtrace_capture_serial);
-        s_append(line,sizeof(line)," (F8) classes="); s_append_uint(line,sizeof(line),g_vtrace_class_count); s_append(line,sizeof(line)," ---"); log_line(line);
+        s_append(line,sizeof(line)," classes="); s_append_uint(line,sizeof(line),g_vtrace_class_count); s_append(line,sizeof(line)," ---"); log_line(line);
     }
     vtrace_maybe_finish();
 }
@@ -4257,7 +4230,7 @@ static void ui_present_boundary(const char* method) {
         log_line(line);
     }
     if(g_owner_submit_enabled && g_ui_present_serial>0 && (g_ui_present_serial%1200UL)==0) {
-        line[0]=0; s_append(line,sizeof(line),"3F heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+        line[0]=0; s_append(line,sizeof(line),"1.0 heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
         s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
         s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
@@ -4485,24 +4458,20 @@ static const void* make_scaled_ui_vertices(DWORD prim, DWORD fvf, const void* ve
 }
 
 static void maybe_toggle_ui_sharp(void) {
-    short k; if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_UI_SHARP);
-    if(k&1) { g_ui_sharp_filter=!g_ui_sharp_filter; log_line(g_ui_sharp_filter?"UI filtering: CRISP (F3)":"UI filtering: NATIVE (F3)"); }
+    if(ui_hotkey_take(UIHK_FILTER)) { g_ui_sharp_filter=!g_ui_sharp_filter; log_line(g_ui_sharp_filter?"UI filtering: CRISP":"UI filtering: NATIVE"); }
 }
 static void maybe_toggle_ui_scale(void) {
-    short k; if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_UI_SCALE);
-    if(k&1) { g_ui_runtime_enabled=!g_ui_runtime_enabled; log_line(g_ui_runtime_enabled?"UI scaling: ON (F5)":"UI scaling: OFF (F5)"); }
+    if(ui_hotkey_take(UIHK_SCALE)) { g_ui_runtime_enabled=!g_ui_runtime_enabled; log_line(g_ui_runtime_enabled?"UI scaling: ON":"UI scaling: OFF"); }
 }
 static void maybe_toggle_ui_input(void) {
-    short k; if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_UI_INPUT);
-    if(k&1) { g_input_runtime_enabled=!g_input_runtime_enabled; log_line(g_input_runtime_enabled?"UI mouse remap (full owner + 2F fallback): ON (F6)":"UI mouse remap (full owner + 2F fallback): OFF (F6)"); }
+    if(ui_hotkey_take(UIHK_INPUT)) { g_input_runtime_enabled=!g_input_runtime_enabled; log_line(g_input_runtime_enabled?"UI mouse remap (full owner + 2F fallback): ON":"UI mouse remap (full owner + 2F fallback): OFF"); }
 }
 static void maybe_toggle_world_input(void) {
-    short k; if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_WORLD_INPUT);
-    if(k&1) { g_world_input_enabled=!g_world_input_enabled; log_line(g_world_input_enabled?"World click correction: ON (F9)":"World click correction: OFF (F9)"); }
+    if(ui_hotkey_take(UIHK_WORLD)) { g_world_input_enabled=!g_world_input_enabled; log_line(g_world_input_enabled?"World click correction: ON":"World click correction: OFF"); }
 }
 static void maybe_dump_ui_groups(void) {
-    short k; DWORD i,n; char line[256];
-    if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_UI_GROUP_DUMP); if(!(k&1)) return;
+    DWORD i,n; char line[256];
+    if(!ui_hotkey_take(UIHK_GROUPS)) return;
     ui_group_lock(); n=g_ui_prev_group_count;
     line[0]=0;s_append(line,sizeof(line),"UI groups present=");s_append_uint(line,sizeof(line),g_ui_present_serial);s_append(line,sizeof(line)," generation=");s_append_uint(line,sizeof(line),g_ui_group_generation);s_append(line,sizeof(line)," count=");s_append_uint(line,sizeof(line),n);log_line(line);
     for(i=0;i<n && i<24;++i) {
@@ -4769,7 +4738,7 @@ static void install_phase2_hooks(void) {
     if(!g_exe) return;
     ok=patch_import(g_exe,"DDRAW.dll","DirectDrawCreateEx",(void*)hook_DirectDrawCreateEx,(void**)&g_real_DirectDrawCreateEx);
     log_line(ok ? "DirectDrawCreateEx IAT hook: OK" : "DirectDrawCreateEx IAT hook: NOT FOUND");
-    if(ok) log_line("Phase 3F renderer armed: all-window owner UI + isolated world input");
+    if(ok) log_line("1.0 renderer armed: all-window owner UI + isolated world input");
 }
 
 /* ---------- real WINMM ---------- */
@@ -4803,8 +4772,9 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Phase 3F Tooltip Placement Before Native Screen Clipping ===");
+    log_line("=== PRM UI FIX Version 1.0 ===");
     log_line("Proxy DLL loaded");
+    ui_hotkeys_load();
     if (g_GetPrivateProfileIntA) {
         g_font_enabled = (int)g_GetPrivateProfileIntA("Font", "Enabled", 1, g_ini_path);
         g_font_add = (int)g_GetPrivateProfileIntA("Font", "AddSize", 0, g_ini_path);
@@ -4954,7 +4924,7 @@ static void initialize_mod(void) {
     owner_submit_install_hooks();
     vtrace_install_submit_hooks();
     vtrace_install_active_vtables();
-    log_line("Phase 3F armed: F2 settings; F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
+    log_line("UI FIX 1.0 armed: shortcuts configured in INI [Keybinds]");
     log_line("Initialization complete");
 }
 

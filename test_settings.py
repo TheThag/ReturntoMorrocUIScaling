@@ -190,6 +190,67 @@ static DWORD owner_native_capture(void) { return g_fake_capture; }
 '''
 
 CORE_STUBS = r'''
+#define UIHK_OVERLAY      0
+#define UIHK_FILTER       1
+#define UIHK_SCALE        2
+#define UIHK_INPUT        3
+#define UIHK_GROUPS       4
+#define UIHK_DIAGNOSTICS  5
+#define UIHK_WORLD        6
+#define UIHK_TRACE        7
+#define UIHK_VIRTUAL_TRACE 8
+#define UIHK_COUNT        9
+#define UIHK_SHIFT        1UL
+#define UIHK_CTRL         2UL
+#define UIHK_ALT          4UL
+#define UIHK_WIN          8UL
+
+static DWORD g_hotkey_vk[UIHK_COUNT];
+static DWORD g_hotkey_mods[UIHK_COUNT];
+static DWORD g_hotkey_bound[UIHK_COUNT];
+static DWORD g_hotkey_current_mods;
+static DWORD g_hotkey_queue;
+static DWORD g_hotkey_queue_calls;
+
+static void hotkeys_reset(void) {
+    unsigned int i;
+    for (i=0; i<UIHK_COUNT; ++i) {
+        g_hotkey_vk[i]=0; g_hotkey_mods[i]=0; g_hotkey_bound[i]=0;
+    }
+    /* The shipped default is deliberately distinct from the old F2/F3/F5
+       polling shortcuts: Shift+P opens the overlay. */
+    g_hotkey_vk[UIHK_OVERLAY]=(DWORD)'P';
+    g_hotkey_mods[UIHK_OVERLAY]=1;
+    g_hotkey_bound[UIHK_OVERLAY]=1;
+    g_hotkey_current_mods=0; g_hotkey_queue=0; g_hotkey_queue_calls=0;
+}
+static void hotkeys_bind(unsigned int action, DWORD vk, DWORD mods) {
+    assert(action<UIHK_COUNT);
+    g_hotkey_vk[action]=vk; g_hotkey_mods[action]=mods;
+    g_hotkey_bound[action]=(vk!=0);
+}
+static void hotkeys_clear(unsigned int action) {
+    assert(action<UIHK_COUNT);
+    g_hotkey_vk[action]=0; g_hotkey_mods[action]=0; g_hotkey_bound[action]=0;
+}
+static DWORD ui_hotkeys_modifiers(void) { return g_hotkey_current_mods; }
+static DWORD ui_hotkeys_match(DWORD vk, DWORD mods) {
+    unsigned int i; DWORD mask=0;
+    for (i=0; i<UIHK_COUNT; ++i)
+        if (g_hotkey_bound[i] && g_hotkey_vk[i]==vk && g_hotkey_mods[i]==mods)
+            mask |= 1UL<<i;
+    return mask;
+}
+static void ui_hotkeys_queue(DWORD mask) {
+    g_hotkey_queue |= mask; ++g_hotkey_queue_calls;
+}
+static int ui_hotkey_take(unsigned int action) {
+    DWORD bit = action<32U ? (1UL<<action) : 0;
+    int result=(g_hotkey_queue & bit)!=0;
+    g_hotkey_queue &= ~bit;
+    return result;
+}
+
 static int g_settings_request_valid,g_settings_request_scale,g_settings_request_enabled;
 static int g_settings_request_crisp,g_settings_request_keep,g_settings_request_save;
 '''
@@ -297,6 +358,7 @@ static void reset_fake(void) {
     text_out_fail=draw_text_fail_at=0; create_font_calls=create_font_fails=created_font_height=0; fail_gdi_api=0; surface_ready=1;
     g_settings_request_valid=0; g_settings_request_scale=0; g_settings_request_enabled=0;
     g_settings_request_crisp=0; g_settings_request_keep=0; g_settings_request_save=0;
+    hotkeys_reset();
     g_ui_settings_api_state=0; g_ui_settings_subclass_state=0; g_ui_settings_panel_open=0;
     g_ui_settings_deferred_open=0; g_ui_settings_events=0; g_ui_settings_mailbox=0;
     g_ui_settings_snapshot=0; g_ui_settings_game_hwnd_snapshot=0; g_ui_settings_original_wndproc=0;
@@ -308,15 +370,26 @@ static void reset_fake(void) {
     g_ui_settings_create_brush=0; g_ui_settings_fill_rect=0; g_ui_settings_delete_object=0;
     g_ui_settings_select_object=0; g_ui_settings_set_bk_mode=0; g_ui_settings_set_text_color=0;
     g_ui_settings_text_out=0; g_ui_settings_draw_text=0; g_ui_settings_create_font=0;
+    ui_settings_key_state_clear();
     for(i=0;i<4;++i) { g_save_keys[i][0]=0; g_save_values[i][0]=0; }
 }
 static void reset_core(void) { reset_fake(); }
 static void ready_and_install(void) { ui_settings_poll(); assert(g_ui_settings_subclass_state==2); }
+static UISettingsLResult send_key(DWORD message, DWORD key, DWORD mods, DWORD flags) {
+    g_hotkey_current_mods=mods;
+    return ui_settings_wndproc(game_window,message,key,flags);
+}
 static void press(DWORD key) {
-    assert(ui_settings_wndproc(game_window,UISET_WM_KEYDOWN,key,0)==0);
+    assert(send_key(UISET_WM_KEYDOWN,key,0,0)==0);
     ui_settings_poll();
 }
-static void open_panel(void) { press(UISET_VK_F2); assert(ui_settings_is_open()); }
+static void press_overlay(void) {
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',1,0)==0);
+    ui_settings_poll();
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,0)==0);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'P',0,0)==0);
+}
+static void open_panel(void) { press_overlay(); assert(ui_settings_is_open()); }
 '''
 
 TESTS = r'''
@@ -355,14 +428,14 @@ static void test_game_hwnd_subclass_and_retry(void) {
 static void test_deferred_open_and_key_routing(void) {
     reset_core(); ready_and_install();
     g_fake_capture=1;
-    press(UISET_VK_F2);
+    press_overlay();
     assert(!ui_settings_is_open() && g_ui_settings_deferred_open);
-    /* A second F2 while capture is active cancels the pending open. */
-    press(UISET_VK_F2);
+    /* A second overlay binding while capture is active cancels the pending open. */
+    press_overlay();
     assert(!ui_settings_is_open() && !g_ui_settings_deferred_open);
     g_fake_capture=0; ui_settings_poll();
     assert(!ui_settings_is_open());
-    press(UISET_VK_F2);
+    press_overlay();
     assert(ui_settings_is_open() && !g_ui_settings_deferred_open);
 
     assert(ui_settings_wndproc(game_window,UISET_WM_KEYDOWN,0x41,0)==0);
@@ -380,12 +453,162 @@ static void test_deferred_open_and_key_routing(void) {
     assert(call_window_proc_calls==3);
     assert(ui_settings_wndproc(game_window,0x0010,0,0)==old_proc_result);
 
-    assert(ui_settings_wndproc(game_window,UISET_WM_KEYDOWN,UISET_VK_F2,UISET_KEY_REPEAT)==0);
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',1,UISET_KEY_REPEAT)==0);
     ui_settings_poll(); assert(ui_settings_is_open());
     assert(ui_settings_wndproc(game_window,UISET_WM_NCDESTROY,0,0)==old_proc_result);
     assert(call_window_proc_calls==5);
     assert(!ui_settings_is_open() && !g_ui_settings_original_wndproc && !g_ui_settings_bound_hwnd);
-    puts("PASS: capture defers F2 open; open panel blocks key/mouse-down input while key-up, lifecycle, and Alt+F4 pass through");
+    puts("PASS: capture defers overlay open; open panel blocks key/mouse-down input while key-up, lifecycle, and Alt+F4 pass through");
+}
+
+static void test_configurable_hotkey_dispatch(void) {
+    int before_calls;
+
+    /* The default Shift+P binding is exact: plain P, F2, F3, and a different
+       modifier chord remain ordinary game input while the panel is closed. */
+    reset_core(); ready_and_install();
+    before_calls=call_window_proc_calls;
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',0,0)==old_proc_result);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'p',0,0)==old_proc_result);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,0)==old_proc_result);
+    assert(send_key(UISET_WM_KEYDOWN,0x71UL,0,0)==old_proc_result); /* F2 */
+    assert(send_key(UISET_WM_KEYDOWN,0x72UL,0,0)==old_proc_result); /* F3 */
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',3,0)==old_proc_result); /* Ctrl+Shift+P */
+    assert(call_window_proc_calls==before_calls+6 && !g_hotkey_queue_calls);
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',1,0)==0);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,0)==0);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'P',0,0)==0);
+    ui_settings_poll(); assert(ui_settings_is_open());
+    ui_settings_close_panel();
+
+    /* Rebinding is action-index based and queues only while the panel is
+       closed.  Autorepeat is consumed without a second queue operation. */
+    reset_core(); ready_and_install();
+    hotkeys_clear(UIHK_OVERLAY);
+    hotkeys_bind(UIHK_OVERLAY,0x72UL,0); /* alternate overlay: F3 */
+    hotkeys_bind(UIHK_FILTER,(DWORD)'Q',UIHK_CTRL);
+    before_calls=call_window_proc_calls;
+    assert(send_key(UISET_WM_KEYDOWN,0x71UL,0,0)==old_proc_result); /* old F2 */
+    assert(send_key(UISET_WM_KEYDOWN,0x72UL,0,0)==0);
+    assert(send_key(UISET_WM_KEYDOWN,0x72UL,0,UISET_KEY_REPEAT)==0);
+    assert(g_hotkey_queue_calls==0);
+    assert(send_key(UISET_WM_KEYUP,0x72UL,0,0)==0);
+    ui_settings_poll(); assert(ui_settings_is_open());
+    ui_settings_close_panel();
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'Q',UIHK_CTRL,0)==0);
+    assert(g_hotkey_queue_calls==1 &&
+           (g_hotkey_queue & (1UL<<UIHK_FILTER))!=0);
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'Q',UIHK_CTRL,UISET_KEY_REPEAT)==0);
+    assert(g_hotkey_queue_calls==1);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'Q',0,0)==0);
+    assert(ui_hotkey_take(UIHK_FILTER));
+    assert(call_window_proc_calls==before_calls+1);
+
+    /* A blank binding leaves both key and character messages untouched. */
+    reset_core(); ready_and_install();
+    hotkeys_clear(UIHK_OVERLAY); hotkeys_clear(UIHK_FILTER);
+    before_calls=call_window_proc_calls;
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'Q',0,0)==old_proc_result);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'q',0,0)==old_proc_result);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'Q',0,0)==old_proc_result);
+    assert(call_window_proc_calls==before_calls+3 && !g_hotkey_queue_calls);
+    puts("PASS: exact default/alternate/blank bindings dispatch through the configurable hotkey contract with repeat suppression");
+}
+
+static void test_hotkey_provenance_and_lifecycle(void) {
+    int before_calls;
+    DWORD scan_p=0x19UL<<16, scan_digit=0x02UL<<16;
+
+    /* The activation character can arrive after the key-up and after a
+       capture-deferred open.  Its scan-tagged pending record keeps it out of
+       chat without globally blocking ordinary WM_CHAR messages. */
+    reset_core(); ready_and_install(); g_fake_capture=1;
+    before_calls=call_window_proc_calls;
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',1,0)==0);
+    ui_settings_poll(); assert(g_ui_settings_deferred_open && !ui_settings_is_open());
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,0)==0);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'P',0,0)==0);
+    assert(call_window_proc_calls==before_calls);
+    g_fake_capture=0; ui_settings_poll(); assert(ui_settings_is_open());
+
+    /* Closing has the same delayed-character requirement. */
+    before_calls=call_window_proc_calls;
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',1,0)==0);
+    ui_settings_poll(); assert(!ui_settings_is_open());
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,0)==0);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'P',0,0)==0);
+    assert(call_window_proc_calls==before_calls);
+
+    /* Releasing the modifier first must not make the bound key-up leak. */
+    reset_core(); ready_and_install();
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',1,0)==0);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,0)==0);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'p',0,0)==0);
+    ui_settings_poll(); assert(ui_settings_is_open());
+    ui_settings_close_panel();
+
+    /* A scan code is authoritative when translated text changes with the
+       modifier state (Shift+1 produces '!'); repeated printable key-downs
+       get one suppression record each. */
+    reset_core(); ready_and_install();
+    hotkeys_clear(UIHK_OVERLAY);
+    hotkeys_bind(UIHK_OVERLAY,(DWORD)'1',UIHK_SHIFT);
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'1',UIHK_SHIFT,scan_digit)==0);
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'1',UIHK_SHIFT,
+                    scan_digit|UISET_KEY_REPEAT)==0);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'1',0,scan_digit)==0);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'!',0,scan_digit)==0);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'!',0,scan_digit)==0);
+    ui_settings_poll(); assert(ui_settings_is_open());
+    ui_settings_close_panel();
+
+    /* Alt chords use the SYSCHAR stream but retain the same scan provenance. */
+    reset_core(); ready_and_install();
+    hotkeys_clear(UIHK_OVERLAY);
+    hotkeys_bind(UIHK_OVERLAY,(DWORD)'Q',UIHK_ALT);
+    assert(send_key(UISET_WM_SYSKEYDOWN,(DWORD)'Q',UIHK_ALT,scan_p)==0);
+    assert(send_key(UISET_WM_SYSKEYUP,(DWORD)'Q',0,scan_p)==0);
+    assert(send_key(UISET_WM_SYSCHAR,(DWORD)'q',0,scan_p)==0);
+    ui_settings_poll(); assert(ui_settings_is_open());
+    ui_settings_close_panel();
+
+    /* If a matched key never produces a character, a fresh ordinary keydown
+       for that VK retires its bounded record before forwarding text. */
+    reset_core(); ready_and_install();
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',UIHK_SHIFT,scan_p)==0);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,scan_p)==0);
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',0,scan_p)==old_proc_result);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'p',0,scan_p)==old_proc_result);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,scan_p)==old_proc_result);
+
+    /* Focus loss clears both consumed-key and pending-character provenance;
+       the subsequent key-up/character is ordinary game input. */
+    reset_core(); ready_and_install();
+    before_calls=call_window_proc_calls;
+    assert(send_key(UISET_WM_KEYDOWN,(DWORD)'P',1,0)==0);
+    assert(send_key(UISET_WM_KILLFOCUS,0,0,0)==old_proc_result);
+    assert(send_key(UISET_WM_KEYUP,(DWORD)'P',0,0)==old_proc_result);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'P',0,0)==old_proc_result);
+    assert(call_window_proc_calls==before_calls+3);
+
+    /* The panel's S-save control can close before TranslateMessage delivers
+       its activation character, so it uses the same matched-key path. */
+    reset_core(); ready_and_install(); open_panel();
+    assert(send_key(UISET_WM_KEYDOWN,UISET_VK_S,0,0)==0);
+    ui_settings_poll(); assert(!ui_settings_is_open());
+    assert(send_key(UISET_WM_KEYUP,UISET_VK_S,0,0)==0);
+    assert(send_key(UISET_WM_CHAR,(DWORD)'s',0,0)==0);
+
+    /* Alt+F4 is always forwarded, even if the user assigns that chord. */
+    reset_core(); ready_and_install();
+    hotkeys_clear(UIHK_OVERLAY);
+    hotkeys_bind(UIHK_OVERLAY,UISET_VK_F4,UIHK_ALT);
+    before_calls=call_window_proc_calls;
+    assert(send_key(UISET_WM_SYSKEYDOWN,UISET_VK_F4,UIHK_ALT,
+                    UISET_ALT_CONTEXT)==old_proc_result);
+    assert(send_key(UISET_WM_SYSKEYUP,UISET_VK_F4,0,0)==old_proc_result);
+    assert(call_window_proc_calls==before_calls+2 && !g_hotkey_queue_calls);
+    puts("PASS: delayed activation chars, modifier release, focus loss, close, and Alt+F4 preserve key provenance safely");
 }
 
 static void test_draft_navigation_apply_save_close(void) {
@@ -487,6 +710,8 @@ int main(void) {
     test_parser_and_packet();
     test_game_hwnd_subclass_and_retry();
     test_deferred_open_and_key_routing();
+    test_configurable_hotkey_dispatch();
+    test_hotkey_provenance_and_lifecycle();
     test_draft_navigation_apply_save_close();
     test_snapshot_and_latest_mailbox();
     test_draw_surface_balance_and_geometry();

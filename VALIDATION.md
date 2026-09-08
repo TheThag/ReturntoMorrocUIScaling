@@ -1,70 +1,53 @@
-# Phase 3F validation
+# UI FIX 1.0 validation
 
-The user confirmed Phase 3E's tooltip reentry, hotbar hover and chat resize
-fixes, then reported misplaced explanations on the Alt+V menu buttons.
-This build corrects tooltip placement when native clipping happens before
-our source transform. In-game confirmation of this change is pending.
+The release retains the UI ownership and rendering implementation accepted in
+manual testing through the Alt+V menu-tooltip correction. Version 1.0 adds
+INI-controlled shortcuts, with Shift+P as the only default binding, and moves
+the compiled DLL from source control into the release download.
 
-## Evidence and implementation
+## Automated verification
 
-The Phase 3E F8 log places UIMenuIconWnd at native (-74,1608), size 220x197,
-with anchor (0,1440), scale 200% and offset (244,-938). It displays correctly
-at (96,838)..(536,1232). Its generic tooltip has the correct retained source,
-but its cached origin is clamped to (-3,1422) by the native factory. Transforming
-that clamped point places the tooltip at (238,466), above its menu.
+All 21 host test harnesses pass. They exercise the production ownership,
+bitmap/background rendering, window bounds, connected windows, tooltip lifetime
+and placement, buff descriptions, map/minimap rendering, drag/capture, input,
+cursor, filtering, presentation, settings and owner registry paths.
 
-Native 628560..6285AE clips the requested coordinates independently into
-[-3, viewport dimension - popup dimension + 3]. The existing clock bridge at
-6284A2 now captures the original arguments from factory EBP+0C/+10. Rendering
-transforms this requested origin through the retained source, compensates for
-the actual cache origin, then applies the existing screen-fitting policy.
-This applies to any owned source using the ordinary tooltip factory.
-
-The native factory, bitmap coordinates and clock result are preserved. The
-bridge forwards controller/x/y with stdcall 12-byte cleanup. The source and
-requested origin survive pointer exit and update on each nonempty factory call,
-including two calls in the same clock tick. The accepted buff, actor speech,
-character-info, input, chat and settings paths retain their existing behavior.
-
-## Verification
-
-All 20 host harnesses pass. The extended bounds fixture models the logged
-menu transform with a requested origin (-68,1615), whose expected displayed
-origin is (108,852). It checks the actual queued bitmap output after native
-clipping. That requested origin is a regression example, not a value captured
-by the old runtime log. Phase 3F now logs the requested coordinates too.
-
-Additional rendering cases cover all four native clipping edges and an
-unclipped origin at 133%, 150% and 200%, followed by final screen fitting.
-Lifetime checks cover changed requested coordinates within one clock tick and
-retention after pointer exit. The real i386 assembly fixture checks EBP argument
-forwarding, EAX return, registers, stack cleanup and continuations. The existing
-map/minimap, connected windows, bounds, drag/capture, input, cursor, filtering,
-presentation, settings, owner lifetime, buff and chat tests also pass.
+The hotkey fixture checks missing and blank INI entries, alternate chords,
+case-insensitive aliases, exact modifiers, invalid/truncated values, numeric
+overflow, duplicate bindings and atomic per-action consumption. It also executes
+the real runtime toggle consumers. The settings fixture checks message routing,
+overlay activation, held keys, generated characters, focus changes, native
+Alt+F4 behavior, apply/save, capture deferral and resource cleanup.
 
 Native verification passes all 21 direct calls, 3 bitmap/background spans,
 3 input/refresh spans, 2 offscreen returns, the central mouse return and layout
-evidence, including the factory frame and argument loads. The runtime auditor
-accepts 3E and 3F and passes synthetic latest-run, missing-snapshot and invalid
-bounds/counter checks. These tests use native fixtures and do not launch PRM.
+evidence. Assembly fixtures check argument forwarding, registers, return values,
+stack cleanup and continuations. The runtime auditor accepts 1.0 and older 3E/3F
+logs, isolates the newest run and rejects missing or invalid bounds samples.
 
-## Artifact and installation
+The DLL is PE32/i386 with exactly 185 expected WinMM exports and no static
+imports, IAT or delay imports. Source checksums are in `SHA256SUMS`; downloadable
+package checksums are attached to the release. Host tests do not launch PRM or
+prove every Wine/driver combination. The new keybind behavior has automated
+coverage; it has not yet been manually tested in-game.
 
-DLL: 211968 bytes, PE32/i386, exactly 185 WinMM exports,
-no static imports, IAT or delay imports. SHA256:
+## Compatibility and manual coverage
 
-```
-d8fd8b5e190a5dc9145d7b672d0c2f25e60fb73ed5bab90690cd1de55e13dd75
-```
-
-PRM.exe remains unchanged, SHA256
+The target PRM.exe is unchanged, SHA256
 `5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b`.
-The accepted ui_settings.h is unchanged. The supplied INI remains 150%; the
-installation replaces only winmm.dll and preserves the live INI at 200% with
-native smoothing and KeepOnScreen enabled. Build/source hashes are recorded in
-SHA256SUMS. Evidence and rollback files stay in evidence/phase3f-work; the
-matching source/build is archived in releases/phase3f.
+The user's in-game testing was on Wine/Lutris at 3440×1440, including 133% and
+200% UI scale. The supplied INI defaults to 150%; other render resolutions must
+be configured explicitly. Geometry tests include multiple resolutions and
+133%, 150% and 200% scaling, but they are not a substitute for visual testing at
+every resolution.
 
-Restart and hover the Alt+V menu buttons, including after moving the connected
-Basic Info/menu block. Press F8 if placement is still wrong. Wait for the user's
-result after handoff; do not poll for manual-test completion.
+## Known issues reported during release preparation
+
+- A character hover name can appear through the fullscreen map when the pointer
+  is over the character's underlying world position.
+- OK/Cancel buttons in native confirmation dialogs, such as skill-point
+  confirmation and returning to login, may not respond with scaling enabled.
+  Disabling scaling through the overlay allows those dialogs to be used.
+
+These reports are recorded for the next fix. They are not represented as solved
+by the 1.0 shortcut and packaging changes.

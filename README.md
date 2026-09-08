@@ -1,201 +1,124 @@
-# PRM UI FIX — Return to Morroc UI Scaling
+# Return to Morroc UI Scaling — UI FIX 1.0
 
-A 32-bit WinMM proxy that enlarges Return to Morroc's interface while keeping
-window contents, mouse interaction and character movement aligned.
+UI FIX enlarges the game interface while keeping clicks, dragging and tooltips
+aligned with their windows. It includes screen fitting, corrected world input,
+actor-attached labels, minimap support and an in-game settings overlay.
 
-The current test build is **Phase 3F**. It includes complete-window scaling, topmost
-window input, dragging, attached NPC descriptions, player chat-room titles,
-character hover names, fullscreen map region previews and the compact minimap.
-The game executable is left unchanged on disk.
+## Download and install
 
-## Keep windows on screen
+Download **ReturntoMorrocUIScaling-1.0.zip** from the
+[1.0 release](https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.0).
+The repository contains source code; compiled DLLs are distributed as release assets.
 
-With `UI.KeepOnScreen=1` (the default), enlarged windows move inward whenever
-an edge would leave the configured screen. Windows larger than the screen at
-the chosen scale shrink uniformly just enough to fit. Contents and mouse input
-use the same adjustment. The correction persists while you drag, so a window
-can move away from the edge immediately.
+1. Close the game and preserve any existing `winmm.dll` and UI FIX configuration.
+2. Extract `winmm.dll` and `prm-ui-fix.ini` beside `PRM.exe`.
+3. Set `ScreenWidth` and `ScreenHeight` under `[UI]` to the game's render
+   resolution. Choose `ScalePercent` between **100 and 200**.
+4. For Wine/Lutris, set `WINEDLLOVERRIDES=winmm=n,b`, preserving other overrides.
+5. Start the game. Press **Shift+P** to open the settings overlay.
 
-Basic Info and its attached icon menu fit as one block. Other windows retain
-independent positions. Cursor-following descriptions also fit within the screen;
-world-attached NPC/player labels retain their established attachment behavior.
-Fullscreen UI keeps the existing native-size policy with `UI.ScaleGlobal=0`.
+Only the DLL and INI need to be installed. The runtime creates `prm-ui-fix.log`.
+To uninstall, remove the proxy and restore any files you preserved.
 
-## Live settings with F2
+The supported client is the 2020-09-02 PRM executable, SHA256
+`5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b`.
+Native hook locations are specific to this client. See [validation](VALIDATION.md)
+for test coverage and known limitations.
 
-Press **F2** while the game is focused to show settings inside the game.
-Use **Up/Down** to select a row and **Left/Right** to change it:
-scale (100–200% in 5% steps), scaling enabled, crisp filtering, or Keep on screen.
-Press **Enter** to apply, **S** to save and close, or **F2/Esc** to close.
-Save writes those four settings to `prm-ui-fix.ini`; unsaved changes reset on restart.
+Two newly reported issues remain in 1.0: hovering the character position can
+show its name through the fullscreen map, and OK/Cancel in native confirmation
+dialogs may not respond with scaling enabled. Temporarily disable scaling from
+the overlay to use those dialogs. Both are scheduled for the next fix.
 
-The panel draws into the game frame and uses the game's existing window.
-Changes take effect at a frame boundary after any current game drag has ended.
-An unavailable drawing API closes the panel and returns input to the game.
+## Settings
 
-## Window click ownership
+The overlay adjusts UI scale, scaling enabled, filtering and screen fitting.
+Use the mouse or arrow keys, Enter to apply, S to save and close, and Esc to
+close. Unsaved changes reset on restart. Saving updates those four UI settings
+and preserves the rest of the INI.
 
-The user accepted Phase 3A's click fix. At 200% scale, Basic Info and chat can
-look separate while their original rectangles overlap. The native hit test
-could assign a converted Basic Info click to chat. The selected visible owner
-now survives that second selection step, for every tracked input window without
-checking its name or class. Each window keeps its native child-control and
-capture handling, including clicks after the pointer stops moving.
-
-Phase 3B also records when the pointer misses displayed UI. The native hit test
-then skips known windows at their former unscaled rectangles, preventing
-explanation popups from appearing there. Untracked native windows retain their
-own hit handling.
-
-Transient explanations and character-info popups now receive bitmap ownership
-on their first draw. Control-based explanations follow their visible source
-window. The player HP/SP gauge also receives ownership and uses its live center
-on every frame, fixing the stale group position that could make it drift during
-movement. The user confirmed the corrected health-bar and character-name alignment.
-
-The user confirmed Phase 3C's in-game F2 settings menu works correctly.
-Phase 3D identifies buff explanations through their native scene controller,
-so their box and text grow to the left of the scaled buff icons. Actor speech
-keeps its own attachment rule.
-
-Phase 3E keeps an ordinary tooltip attached to the window that last produced
-its text, including the brief period before the game dismisses it after pointer
-exit. The latest Phase 3D log showed these popups already drawing at 200%, with
-space available in the owner table; their source translation could still change
-when the pointer left the window.
-
-The shared per-window update callback now respects the visible hover owner,
-including hotbar highlights that bypass the normal hit query. The manager's
-alternate background callback also receives window ownership, keeping the chat
-background and contents together while resizing. Both callbacks apply to any
-tracked window using those native paths, without a chat/hotbar class check.
-
-The user confirmed those Phase 3E fixes. Phase 3F addresses tooltips on the
-Alt+V menu when its native position lies outside the screen but its scaled
-position is visible. The tooltip's requested position now passes through its
-source transform before screen fitting, preventing native clipping from pulling
-it away from the visible buttons. This applies to ordinary tooltips from any
-owned window. In-game confirmation of this placement change is pending.
-
-Inactive owner records remain reclaimable. First-appearance diagnostics include
-the tooltip's retained source, requested position and final position adjustment.
-The working branch is `fix/tooltip-entry-and-buff-placement`.
-
-## Compatibility
-
-The native hooks target the **2020-09-02 PRM.exe client** used during development.
-Other client builds need their hook addresses and object layouts verified.
-The tested executable has SHA256:
-
-```text
-5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b
-```
-
-Manual testing used Wine/Lutris at 3440×1440, initially at 133% UI scale and
-then at 200%. The supplied INI now uses the requested 150% configuration.
-See [validation](VALIDATION.md) for the checks and their coverage.
-
-## Install
-
-1. Close the game and back up any existing `winmm.dll` and UI FIX configuration.
-2. Copy this repository's `winmm.dll` and `prm-ui-fix.ini` beside `PRM.exe`.
-3. Set `UI.ScreenWidth` and `UI.ScreenHeight` in the INI to the game's render
-   resolution. Choose `UI.ScalePercent` between **100 and 200**.
-4. For Wine/Lutris, set the environment variable
-   `WINEDLLOVERRIDES=winmm=n,b`. Preserve any other overrides already configured.
-5. Start the game. The proxy writes `prm-ui-fix.log` beside the DLL.
-
-Only `winmm.dll` and `prm-ui-fix.ini` need to be installed. The runtime log is
-created automatically. Keep rollback builds, test reports, auditors, and other
-development documentation in the project folder.
-
-Keep the matching INI with this build. Configuration is read at startup. Use F2 for live UI settings;
-restart after changing the game resolution or other INI settings. To uninstall, remove this
-proxy and restore the files you backed up.
-
-## Configuration
-
-| Setting | Supplied value | Purpose |
+| INI setting | Default | Purpose |
 | --- | --- | --- |
-| `UI.ScalePercent` | `150` | UI enlargement, from 100% to 200% |
-| `UI.ScreenWidth` / `UI.ScreenHeight` | `3440` / `1440` | Game render resolution used for UI anchors |
-| `UI.KeepOnScreen` | `1` | Keep enlarged windows within the screen |
-| `UI.SharpFilter` | `0` | Native smoothing; use `1` for point sampling |
+| `UI.ScalePercent` | `150` | UI enlargement, 100%–200% |
+| `UI.ScreenWidth` / `UI.ScreenHeight` | `3440` / `1440` | Game render resolution |
+| `UI.KeepOnScreen` | `1` | Fit enlarged windows within the screen |
+| `UI.SharpFilter` | `0` | Native smoothing; `1` selects point sampling |
 | `Font.AddSize` | `0` | Preserve native font metrics and layout |
 | `OwnerBitmap.Enabled` | `1` | Complete-window ownership and scaling |
 | `WorldInput.Enabled` | `1` | Separate correction for terrain input |
 
-UI anchors use the configured resolution; changing the game resolution while
-running does not refresh them automatically. World input separately uses the
-live viewport/client dimensions. Large fullscreen UI remains native size with
-`UI.ScaleGlobal=0`. UI enlargement does not add automatic window layout or reflow.
+Resolution and INI changes require a game restart. UI anchors use the configured
+resolution; world input uses the live viewport/client dimensions. Fullscreen UI
+keeps its native size with `UI.ScaleGlobal=0`. Enlargement does not reflow layouts.
 
 The renderer enlarges existing cached bitmaps. Native smoothing generally looks
-better at fractional scales; point sampling can make pixels sharper but uneven.
-Larger replacement artwork or fonts do not automatically produce higher-DPI UI:
-loading, bitmap resolution and logical layout would also need to support them.
+better at fractional scales; point sampling makes pixels more distinct. Higher
+resolution artwork and fonts also need support from the client's bitmap loading
+and logical layout to produce higher resolution UI.
 
-## Shortcuts
+## Configurable shortcuts
 
-| Key | Action |
-| --- | --- |
-| F2 | Open/close the live UI settings panel |
-| F3 | Switch native smoothing / crisp point sampling |
-| F4 | Capture a trace, when enabled in the INI |
-| F5 | Toggle UI scaling |
-| F6 | Toggle UI mouse correction |
-| F7 | Dump fallback UI groups |
-| F8 | Dump ownership, input, minimap and renderer diagnostics |
-| F9 | Toggle world input correction |
+All UI FIX shortcuts are controlled by `[Keybinds]` in `prm-ui-fix.ini`.
+Only the overlay has a default shortcut. A blank value disables an action.
 
-F11 and F12 remain available to the game. Unsaved runtime settings reset on restart.
+```ini
+[Keybinds]
+Overlay=Shift+P
+ToggleFiltering=
+ToggleScaling=
+ToggleMouseRemap=
+DumpGroups=
+DumpDiagnostics=
+ToggleWorldInput=
+CaptureTrace=
+CaptureVirtualTrace=
+```
 
-## Build
+Names are case-insensitive. Combine a key with `Ctrl`, `Shift`, `Alt` or `Win`
+using `+`, for example `Ctrl+F8`. Letter and digit keys, F1–F24, arrow keys and
+common named keys such as Enter, Esc, Space, Tab, Home, End, Insert, Delete,
+PageUp and PageDown are supported. Modifiers must match exactly. Invalid values
+disable the binding and are logged. Restart the game after editing keybinds.
 
-Building requires Bash, Clang, LLVM's `lld-link` and the `file` utility on Linux. The DLL is
-freestanding and needs no Windows SDK or C runtime libraries.
+`ToggleFiltering`, `ToggleScaling`, `ToggleMouseRemap` and `ToggleWorldInput`
+switch their respective runtime options. `DumpGroups` and `DumpDiagnostics`
+write troubleshooting information to the log. `CaptureTrace` additionally
+requires `[Trace] Enabled=1`; `CaptureVirtualTrace` requires
+`[VirtualTrace] Enabled=1`. These tracing options are disabled by default.
+
+## Build and verify
+
+Building requires Bash, Clang, LLVM's `lld-link` and the `file` utility on Linux.
+The DLL is freestanding and needs no Windows SDK or C runtime libraries.
 
 ```sh
 ./build.sh
+sha256sum -c SHA256SUMS
 ```
 
-The script writes `winmm.dll` in the repository root. `CLANG` and `LLD` can select
-alternative executable paths. The proxy exports 185 WinMM names and loads the
-real system WinMM dynamically.
+The build writes an ignored `winmm.dll` in the repository root. `CLANG` and `LLD`
+can select alternative executable paths. The proxy exports 185 WinMM names and
+loads the real system WinMM dynamically. Repository checksums cover source/build
+inputs; release checksums cover the downloadable package.
 
-## Verify and test
-
-Python 3 and Clang are required. The host tests additionally need 32-bit Linux
-execution support, 32-bit C headers/libraries, LLVM `ld.lld`, and Clang's
-AddressSanitizer/UndefinedBehaviorSanitizer runtimes for the tested architectures.
-
-Validate the native hooks against your own game executable:
+Tests require Python 3, Clang, 32-bit Linux execution support, 32-bit C headers
+and libraries, LLVM `ld.lld`, and Clang's ASan/UBSan runtimes.
 
 ```sh
 python3 verify_hooks.py /path/to/PRM.exe
-```
-
-Run the host fixtures from the repository root:
-
-```sh
 for test in test_*.py; do
     python3 "$test" || exit 1
 done
 ```
 
-The fixtures extract production C functions and exercise ownership, input,
-capture, minimap/map rendering, filtering, registry lifetime and assembly
-argument forwarding. They do not launch the game.
-
-For a runtime report, press F8 in-game and inspect the generated log:
+The fixtures exercise production functions and assembly bridges without
+launching the game. For a runtime report, assign `DumpDiagnostics` a shortcut,
+restart, press it in-game, and inspect the latest snapshot:
 
 ```sh
 python3 audit_phase3e.py /path/to/prm-ui-fix.log
 ```
 
-The auditor reports missing samples as REVIEW. A successful diagnostic audit
-still needs visual confirmation of layout and interaction. Without explicit
-paths, the verifier and auditor use `~/Games/Refuge/` as a development default.
-
-[Implementation notes](docs/IMPLEMENTATION.md) describe the native drawing paths.
-[Validation](VALIDATION.md) records the tested build's identity and evidence.
+Missing samples are reported as REVIEW. Without explicit paths, development
+tools use `~/Games/Refuge/`. See [implementation notes](docs/IMPLEMENTATION.md)
+for the native drawing and input paths.

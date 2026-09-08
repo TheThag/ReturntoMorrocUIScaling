@@ -4,11 +4,12 @@
 /*
  * Render-thread settings panel.
  *
- * F2 is handled by a lightweight subclass of the game's main window.  The
- * subclass only places bits in an atomic mailbox; it never creates a window,
- * changes focus, calls the settings callback, or touches the UI globals.  The
- * render thread owns the draft values, drains that mailbox, and paints the
- * panel into the DirectDraw surface supplied by the present hook.
+ * The configurable overlay binding is handled by a lightweight subclass of
+ * the game's main window.  The subclass only places bits in atomic mailboxes;
+ * it never creates a window, changes focus, calls the settings callback, or
+ * touches the UI globals.  The render thread owns the draft values, drains
+ * those mailboxes, and paints the panel into the DirectDraw surface supplied
+ * by the present hook.
  */
 
 #ifndef UI_SETTINGS_APPLY
@@ -22,7 +23,7 @@
 #define UISET_PACKET_SAVE     0x00000800UL
 #define UISET_PACKET_PERCENT  0x000000ffUL
 
-#define UISET_EVENT_F2        0x00000001UL
+#define UISET_EVENT_TOGGLE    0x00000001UL
 #define UISET_EVENT_UP        0x00000002UL
 #define UISET_EVENT_DOWN      0x00000004UL
 #define UISET_EVENT_LEFT      0x00000008UL
@@ -32,8 +33,10 @@
 #define UISET_EVENT_ESCAPE    0x00000080UL
 
 #define UISET_VK_ESCAPE       0x1bUL
+#define UISET_VK_BACK         0x08UL
+#define UISET_VK_TAB          0x09UL
 #define UISET_VK_RETURN       0x0dUL
-#define UISET_VK_F2           0x71UL
+#define UISET_VK_SPACE        0x20UL
 #define UISET_VK_F4           0x73UL
 #define UISET_VK_S            0x53UL
 #define UISET_VK_UP           0x26UL
@@ -50,6 +53,8 @@
 #define UISET_WM_SYSKEYUP     0x0105UL
 #define UISET_WM_SYSCHAR      0x0106UL
 #define UISET_WM_NCDESTROY    0x0082UL
+#define UISET_WM_KILLFOCUS    0x0008UL
+#define UISET_WM_ACTIVATEAPP  0x001cUL
 #define UISET_WM_LBUTTONDOWN  0x0201UL
 #define UISET_WM_LBUTTONUP    0x0202UL
 #define UISET_WM_LBUTTONDBLCLK 0x0203UL
@@ -83,6 +88,19 @@
 #define UISET_DT_SINGLELINE   0x0020UL
 #define UISET_DT_VCENTER      0x0004UL
 #define UISET_DT_LEFT         0x0000UL
+
+/* ui_hotkeys.h is included by the production translation unit before this
+ * header.  These fallback indices keep the settings fixture self-contained;
+ * the real header supplies the same public contract. */
+#ifndef UIHK_OVERLAY
+#define UIHK_OVERLAY          0
+#endif
+#ifndef UIHK_SHIFT
+#define UIHK_SHIFT            1UL
+#define UIHK_CTRL             2UL
+#define UIHK_ALT              4UL
+#define UIHK_WIN              8UL
+#endif
 
 typedef LONG UISettingsLResult;
 typedef ULONG_PTR UISettingsWParam;
@@ -130,6 +148,17 @@ static int g_ui_settings_draft_crisp;
 static int g_ui_settings_draft_keep;
 static int g_ui_settings_status;
 static int g_ui_settings_failure_logged;
+
+#define UISET_PENDING_CHAR_CAP 8
+typedef struct UISettingsPendingChar {
+    BYTE vk;
+    BYTE scan;
+    BYTE extended;
+    BYTE expected;
+} UISettingsPendingChar;
+static BYTE g_ui_settings_consumed_keys[256];
+static UISettingsPendingChar g_ui_settings_pending_chars[UISET_PENDING_CHAR_CAP];
+static unsigned int g_ui_settings_pending_char_count;
 
 static PFN_UISettingsSetWindowLongA g_ui_settings_set_window_long;
 static PFN_UISettingsCallWindowProcA g_ui_settings_call_window_proc;
@@ -274,33 +303,238 @@ static void ui_settings_event(DWORD event) {
     __atomic_fetch_or(&g_ui_settings_events, event, __ATOMIC_RELEASE);
 }
 
+static DWORD ui_settings_hotkey_bit(unsigned int action) {
+    if (action >= 32U) return 0;
+    return 1UL << action;
+}
+
+static int ui_settings_key_is_printable(DWORD vk, DWORD mods, BYTE* expected) {
+    /* The pending-character filter is intentionally narrow.  It covers the
+       ASCII key names accepted by the INI parser without ever swallowing an
+       unrelated Unicode/IME character after a blank binding. */
+    if (vk >= (DWORD)'A' && vk <= (DWORD)'Z') {
+        if (expected) {
+            *expected = (BYTE)(mods & UIHK_CTRL ? (vk & 0x1fUL) : vk);
+            if (!(mods & UIHK_CTRL) && !(mods & UIHK_SHIFT))
+                *expected = (BYTE)(vk + ((DWORD)'a' - (DWORD)'A'));
+        }
+        return 1;
+    }
+    if (vk >= (DWORD)'0' && vk <= (DWORD)'9') {
+        if (expected) {
+            static const char shifted[] = ")!@#$%^&*(";
+            *expected = (BYTE)(mods & UIHK_CTRL ? (vk & 0x1fUL) : vk);
+            if (mods & UIHK_SHIFT)
+                *expected = (BYTE)shifted[vk - (DWORD)'0'];
+        }
+        return 1;
+    }
+    if (vk == UISET_VK_SPACE) {
+        if (expected) *expected = (BYTE)' ';
+        return 1;
+    }
+    if (vk == UISET_VK_TAB) {
+        if (expected) *expected = (BYTE)'\t';
+        return 1;
+    }
+    if (vk == UISET_VK_BACK) {
+        if (expected) *expected = (BYTE)'\b';
+        return 1;
+    }
+    if (vk == UISET_VK_ESCAPE) {
+        if (expected) *expected = (BYTE)0x1b;
+        return 1;
+    }
+    if (vk == UISET_VK_RETURN) {
+        if (expected) *expected = (BYTE)'\r';
+        return 1;
+    }
+    return 0;
+}
+
+static BYTE ui_settings_key_scan(UISettingsLParam lParam) {
+    return (BYTE)(((DWORD)lParam >> 16) & 0xffUL);
+}
+
+static BYTE ui_settings_key_extended(UISettingsLParam lParam) {
+    return (BYTE)(((DWORD)lParam >> 24) & 1UL);
+}
+
+static void ui_settings_pending_char_retire_vk(DWORD vk) {
+    unsigned int i = 0;
+    while (i < g_ui_settings_pending_char_count) {
+        if (g_ui_settings_pending_chars[i].vk == (BYTE)vk) {
+            unsigned int j;
+            for (j = i + 1; j < g_ui_settings_pending_char_count; ++j)
+                g_ui_settings_pending_chars[j - 1] = g_ui_settings_pending_chars[j];
+            --g_ui_settings_pending_char_count;
+        } else {
+            ++i;
+        }
+    }
+}
+
+static void ui_settings_pending_char_push(DWORD vk, DWORD mods,
+                                           UISettingsLParam lParam) {
+    BYTE expected;
+    unsigned int i;
+    if (vk > 255U || !ui_settings_key_is_printable(vk, mods, &expected)) return;
+    if (g_ui_settings_pending_char_count >= UISET_PENDING_CHAR_CAP) {
+        for (i = 1; i < UISET_PENDING_CHAR_CAP; ++i)
+            g_ui_settings_pending_chars[i - 1] = g_ui_settings_pending_chars[i];
+        g_ui_settings_pending_char_count = UISET_PENDING_CHAR_CAP - 1U;
+    }
+    g_ui_settings_pending_chars[g_ui_settings_pending_char_count].vk = (BYTE)vk;
+    g_ui_settings_pending_chars[g_ui_settings_pending_char_count].scan =
+        ui_settings_key_scan(lParam);
+    g_ui_settings_pending_chars[g_ui_settings_pending_char_count].extended =
+        ui_settings_key_extended(lParam);
+    g_ui_settings_pending_chars[g_ui_settings_pending_char_count].expected = expected;
+    ++g_ui_settings_pending_char_count;
+}
+
+static void ui_settings_key_state_clear(void) {
+    unsigned int i;
+    for (i = 0; i < 256U; ++i) g_ui_settings_consumed_keys[i] = 0;
+    g_ui_settings_pending_char_count = 0;
+}
+
+static int ui_settings_key_was_consumed(DWORD vk) {
+    return vk <= 255U && g_ui_settings_consumed_keys[vk] != 0;
+}
+
+static void ui_settings_mark_key_consumed(DWORD vk) {
+    if (vk > 255U) return;
+    g_ui_settings_consumed_keys[vk] = 1;
+}
+
+static void ui_settings_mark_key_char(DWORD vk, DWORD mods,
+                                       UISettingsLParam lParam) {
+    if (vk > 255U) return;
+    ui_settings_pending_char_push(vk, mods, lParam);
+}
+
+static int ui_settings_char_matches(BYTE expected, DWORD value) {
+    BYTE got = (BYTE)(value & 0xffUL);
+    if (expected >= (BYTE)'A' && expected <= (BYTE)'Z')
+        return got == expected || got == (BYTE)(expected + ((BYTE)'a' - (BYTE)'A'));
+    return got == expected;
+}
+
+static int ui_settings_consume_pending_char(DWORD value, UISettingsLParam lParam) {
+    unsigned int i;
+    BYTE scan = ui_settings_key_scan(lParam);
+    BYTE extended = ui_settings_key_extended(lParam);
+    if (!g_ui_settings_pending_char_count) return 0;
+    for (i = 0; i < g_ui_settings_pending_char_count; ++i) {
+        UISettingsPendingChar* pending = &g_ui_settings_pending_chars[i];
+        if (pending->scan && scan && pending->scan != scan) continue;
+        if (pending->extended != extended && pending->scan && scan) continue;
+        /* Once Windows gives us the originating scan code, it is stronger
+           provenance than translated text (Shift+1 becomes '!'; Alt chords
+           may arrive as WM_SYSCHAR).  Zero scan codes are fixture/IME
+           fallbacks and retain the narrow character check. */
+        if (!(pending->scan && scan) &&
+            !ui_settings_char_matches(pending->expected, value)) continue;
+        for (; i + 1 < g_ui_settings_pending_char_count; ++i)
+            g_ui_settings_pending_chars[i] = g_ui_settings_pending_chars[i + 1];
+        --g_ui_settings_pending_char_count;
+        return 1;
+    }
+    return 0;
+}
+
+static int ui_settings_is_alt_f4(DWORD message, DWORD vk, UISettingsLParam lParam,
+                                  DWORD mods) {
+    if (vk != UISET_VK_F4) return 0;
+    if (message != UISET_WM_SYSKEYDOWN) return 0;
+    return (lParam & UISET_ALT_CONTEXT) != 0 || (mods & UIHK_ALT) != 0;
+}
+
 static UISettingsLResult WINAPI ui_settings_wndproc(HWND hwnd, DWORD message,
                                                      UISettingsWParam wParam,
                                                      UISettingsLParam lParam) {
     int open = __atomic_load_n(&g_ui_settings_panel_open, __ATOMIC_ACQUIRE) != 0;
+    DWORD vk = (DWORD)wParam & 0xffUL;
+
+    if (message == UISET_WM_KILLFOCUS ||
+        (message == UISET_WM_ACTIVATEAPP && !wParam)) {
+        ui_settings_key_state_clear();
+        return ui_settings_forward(hwnd, message, wParam, lParam);
+    }
+
     if (message == UISET_WM_KEYDOWN || message == UISET_WM_SYSKEYDOWN) {
-        /* Alt+F4 remains the game's normal close command. */
-        if (message == UISET_WM_SYSKEYDOWN &&
-            wParam == UISET_VK_F4 && (lParam & UISET_ALT_CONTEXT))
+        DWORD mods = ui_hotkeys_modifiers();
+        DWORD mask;
+        int repeat = (lParam & UISET_KEY_REPEAT) != 0;
+
+        /* Alt+F4 remains the game's normal close command, even if a user
+           assigns F4 to one of the configurable actions. */
+        if (ui_settings_is_alt_f4(message, vk, lParam, mods))
             return ui_settings_forward(hwnd, message, wParam, lParam);
-        if (wParam == UISET_VK_F2) {
-            if (!(lParam & UISET_KEY_REPEAT)) ui_settings_event(UISET_EVENT_F2);
+
+        mask = ui_hotkeys_match(vk, mods);
+        if (ui_settings_key_was_consumed(vk)) {
+            /* A held printable binding may produce several WM_CHAR messages;
+               retain one scan-tagged record for each repeat. */
+            if (repeat) ui_settings_mark_key_char(vk, mods, lParam);
             return 0;
         }
+        if (!repeat && vk <= 255U) ui_settings_pending_char_retire_vk(vk);
+
+        /* The overlay action is the only hotkey allowed to change panel state
+           while it is open.  Repeated key-down messages stay consumed but do
+           not enqueue a second toggle. */
+        if (mask & ui_settings_hotkey_bit(UIHK_OVERLAY)) {
+            ui_settings_mark_key_consumed(vk);
+            ui_settings_mark_key_char(vk, mods, lParam);
+            if (!repeat) ui_settings_event(UISET_EVENT_TOGGLE);
+            return 0;
+        }
+
         if (open) {
-            if (wParam == UISET_VK_ESCAPE) ui_settings_event(UISET_EVENT_ESCAPE);
-            else if (wParam == UISET_VK_UP) ui_settings_event(UISET_EVENT_UP);
-            else if (wParam == UISET_VK_DOWN) ui_settings_event(UISET_EVENT_DOWN);
-            else if (wParam == UISET_VK_LEFT) ui_settings_event(UISET_EVENT_LEFT);
-            else if (wParam == UISET_VK_RIGHT) ui_settings_event(UISET_EVENT_RIGHT);
-            else if (wParam == UISET_VK_RETURN) ui_settings_event(UISET_EVENT_ENTER);
-            else if (wParam == UISET_VK_S) ui_settings_event(UISET_EVENT_SAVE);
+            /* These controls remain local to the settings panel and are
+               independent of the configurable action bindings. */
+            if (vk == UISET_VK_ESCAPE) ui_settings_event(UISET_EVENT_ESCAPE);
+            else if (vk == UISET_VK_UP) ui_settings_event(UISET_EVENT_UP);
+            else if (vk == UISET_VK_DOWN) ui_settings_event(UISET_EVENT_DOWN);
+            else if (vk == UISET_VK_LEFT) ui_settings_event(UISET_EVENT_LEFT);
+            else if (vk == UISET_VK_RIGHT) ui_settings_event(UISET_EVENT_RIGHT);
+            else if (vk == UISET_VK_RETURN) ui_settings_event(UISET_EVENT_ENTER);
+            else if (vk == UISET_VK_S) {
+                ui_settings_mark_key_consumed(vk);
+                ui_settings_mark_key_char(vk, mods, lParam);
+                ui_settings_event(UISET_EVENT_SAVE);
+            }
             /* Every other key-down is consumed while the panel is open. */
             return 0;
         }
+
+        if (mask) {
+            ui_settings_mark_key_consumed(vk);
+            ui_settings_mark_key_char(vk, mods, lParam);
+            if (!repeat) ui_hotkeys_queue(mask);
+            return 0;
+        }
     }
-    if ((message == UISET_WM_CHAR || message == UISET_WM_SYSCHAR) && open)
-        return 0;
+
+    if (message == UISET_WM_KEYUP || message == UISET_WM_SYSKEYUP) {
+        /* Match provenance from key-down, rather than current modifier state;
+           Shift/Ctrl/Alt often arrives as key-up before the bound key. */
+        if (ui_settings_key_was_consumed(vk)) {
+            g_ui_settings_consumed_keys[vk] = 0;
+            return 0;
+        }
+    }
+
+    if (message == UISET_WM_CHAR || message == UISET_WM_SYSCHAR) {
+        /* TranslateMessage can enqueue WM_CHAR after the physical key-up.
+           Consume only a bounded, character-specific record created by a
+           matched key-down. */
+        if (ui_settings_consume_pending_char((DWORD)wParam, lParam)) return 0;
+        if (open) return 0;
+    }
+
     if (open && (message == UISET_WM_LBUTTONDOWN ||
                  message == UISET_WM_LBUTTONDBLCLK ||
                  message == UISET_WM_RBUTTONDOWN ||
@@ -313,7 +547,9 @@ static UISettingsLResult WINAPI ui_settings_wndproc(HWND hwnd, DWORD message,
                  message == UISET_WM_MOUSEHWHEEL)) return 0;
     if (message == UISET_WM_NCDESTROY) {
         UISettingsLResult result=ui_settings_forward(hwnd,message,wParam,lParam);
+        ui_settings_key_state_clear();
         __atomic_store_n(&g_ui_settings_panel_open, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_ui_settings_deferred_open, 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_ui_settings_subclass_state, 0, __ATOMIC_RELEASE);
         g_ui_settings_original_wndproc = 0;
         g_ui_settings_bound_hwnd = 0;
@@ -406,7 +642,7 @@ static void ui_settings_queue_draft(int save) {
 static void ui_settings_drain_events(void) {
     DWORD events = __atomic_exchange_n(&g_ui_settings_events, 0, __ATOMIC_ACQ_REL);
     int open = __atomic_load_n(&g_ui_settings_panel_open, __ATOMIC_ACQUIRE) != 0;
-    if (events & UISET_EVENT_F2) {
+    if (events & UISET_EVENT_TOGGLE) {
         if (open) ui_settings_close_panel();
         else if (owner_native_capture()) {
             LONG pending = __atomic_load_n(&g_ui_settings_deferred_open, __ATOMIC_ACQUIRE);
