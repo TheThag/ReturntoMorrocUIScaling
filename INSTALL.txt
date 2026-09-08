@@ -1,0 +1,81 @@
+UI FIX 1.0 - Return to Morroc UI Scaling
+Updated package: 2026-09-08
+
+INSTALL OR UPDATE
+
+1. Download ReturntoMorrocUIScaling-1.0.zip from the release's Assets section:
+   https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.0
+   The automatically generated Source code downloads do not include the DLL.
+2. Close the game. Preserve any existing winmm.dll and prm-ui-fix.ini outside
+   the game folder before replacing files.
+3. New installation: copy winmm.dll and prm-ui-fix.ini into the game folder,
+   next to PRM.exe. Do not place them inside savedata.
+   Updating UI FIX: replace its winmm.dll and keep your existing INI to retain
+   your settings. The new AutoDetectResolution option defaults to 1 if absent.
+4. Windows: start the game normally. See the optional workaround below if it
+   crashes. Linux/Wine/Lutris: configure the winmm DLL override as native then
+   builtin, or set WINEDLLOVERRIDES=winmm=n,b. Preserve other DLL overrides.
+5. Open the settings overlay with Shift+P (the default Overlay binding).
+   Adjust scale, filtering and screen fitting. Apply changes, then Save to
+   keep them after restarting. Enter applies; S saves and closes; Esc closes.
+
+Only winmm.dll and prm-ui-fix.ini from this ZIP need to go in the game folder.
+Keep this guide and the checksum files elsewhere. Do not replace PRM.exe.
+
+RESOLUTION AND DEFAULTS
+
+The fix reads WIDTH and HEIGHT from savedata/OptionInfo.lua when the game
+starts. Set your resolution through the game's normal setup and restart the
+game after changing it. There is no need to edit the Lua file for UI FIX.
+
+If that file is missing or its dimensions are invalid, UI FIX uses [UI]
+ScreenWidth and ScreenHeight from prm-ui-fix.ini. Set AutoDetectResolution=0
+to use those manual dimensions explicitly. The shipped fallback is 3440x1440;
+change it to your game resolution if automatic detection cannot be used.
+
+New installations use ScalePercent=150, SharpFilter=0 (crisp UI off, native
+smoothing), and KeepOnScreen=1. Scale can be adjusted from 100% to 200%.
+All shortcuts are configurable in [Keybinds]. Only Overlay=Shift+P is assigned
+by default; blank values disable the other actions. Restart after INI edits.
+
+WINDOWS: POSSIBLE DGVOODOO2 / DIRECT3D 11 WORKAROUND
+
+UI FIX was tested in-game on Linux/Wine. Windows and this workaround have not
+been tested. If the client crashes on Windows, dgVoodoo2 with Direct3D 11 output
+may help, but it is not a confirmed requirement or a guaranteed crash fix.
+
+1. Download the regular dgVoodoo2 package from its official releases:
+   https://github.com/dege-diosg/dgVoodoo2/releases
+2. Preserve any existing graphics-wrapper files. From MS/x86 in that package,
+   copy DDraw.dll and D3DImm.dll next to PRM.exe. Use x86 because the game is
+   32-bit, even on 64-bit Windows. Keep UI FIX's winmm.dll in place.
+3. Copy dgVoodooCpl.exe and dgVoodoo.conf into the same game folder. Open the
+   control panel and select that folder as its configuration location.
+4. Under General, choose Direct3D 11 with feature level 11.0 as the Output API.
+   Under DirectX, leave Resolution unforced so the game's selected resolution
+   is preserved. Apply the configuration, close the panel and start the game.
+
+Wrapper setup reference:
+https://dege.freeweb.hu/dgVoodoo2/ReadmeGeneral/
+Keep wrapper DLLs in the game folder; do not copy them into Windows system
+folders. dgVoodoo2 is a separate download and is not included with UI FIX.
+To undo this workaround, remove the dgVoodoo files you added and restore any
+previous wrapper files.
+
+TROUBLESHOOTING AND REMOVAL
+
+- If the overlay does not open, check [Keybinds] Overlay in your INI and restart
+  after editing it. Upgrades preserve your existing shortcut choices.
+- Look for prm-ui-fix.log beside PRM.exe. Its newest startup records the chosen
+  resolution source, ScreenWidth/ScreenHeight and SharpFilter. If it is absent
+  on Wine, check the winmm override and that the DLL is beside PRM.exe.
+- For a problem report, include the latest log, OS/Wine version, game resolution,
+  UI scale and any graphics wrappers used. Windows feedback is welcome.
+- To uninstall UI FIX, close the game, remove its winmm.dll and prm-ui-fix.ini,
+  then restore any files you preserved. The generated log may also be removed.
+
+This release targets the 2020-09-02 PRM client. PRM.exe SHA256:
+5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b
+
+Project and source:
+https://github.com/TheThag/ReturntoMorrocUIScaling

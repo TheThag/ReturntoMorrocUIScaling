@@ -1,7 +1,16 @@
 # PRM UI FIX implementation notes
 
-Version 1.0.1 development. These notes describe the native client paths and the implemented
-ownership rules. For installation and settings, see [README](../README.md).
+Version 1.0. These notes describe the native client paths and the implemented
+ownership rules in the refreshed release. For installation and settings, see
+[README](../README.md) and [validation](../VALIDATION.md). The release binary
+uses the same behavioral code as the tested build; only version labels changed
+for the release rebuild.
+
+The supported installation places `winmm.dll` and `prm-ui-fix.ini` beside
+`PRM.exe`. Close the game before replacing either file and restart it after
+configuration changes. Wine/Lutris users should set
+`WINEDLLOVERRIDES=winmm=n,b`, preserving other overrides. Windows and dgVoodoo
+with the DirectX 11 renderer are untested.
 
 ## Startup resolution
 
@@ -22,6 +31,8 @@ CRT dependency or large stack allocation. A truncated DLL path is rejected.
 The effective dimensions and their source are logged before hooks are armed.
 Detection runs once per process, so changing the game's saved resolution
 requires restarting the game. Overlay saves do not write these settings.
+The user-confirmed Linux/Wine startup check at 200% selected 3440x1440 with
+`AutoDetectResolution=1` and `SharpFilter=0`.
 
 ## Screen bounds and live settings
 
@@ -309,7 +320,7 @@ their separate Phase 2Y rule above; spoken-message classes remain separate.
 ## Child capture boundaries
 
 The old traversal reported overflow when a list ended at exactly 512 children;
-it also silently stopped with pending work after 4096 visited objects. Those
+it also silently stopped with queued work after 4096 visited objects. Those
 boundary conditions now distinguish complete traversal from truncated work,
 without increasing either limit. Recently drawn root objects must still have
 their saved vtable before their children are read, matching input publication's
