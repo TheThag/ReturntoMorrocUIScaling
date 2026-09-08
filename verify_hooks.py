@@ -44,6 +44,8 @@ BITMAP_PATCHES = (
      bytes.fromhex("ff 53 28 8b 5d dc")),
     ("Alternate window bitmap", "PRM_BITMAP_ALTERNATE_RVA", 0x0020BAA3,
      bytes.fromhex("ff 53 0c 8b 5d dc")),
+    ("Alternate window background", "PRM_ALT_BACKGROUND_RVA", 0x0020BA14,
+     bytes.fromhex("ff 90 a0 00 00 00")),
 )
 
 # Replace only the manager's root candidate call, preserving the original
@@ -51,6 +53,10 @@ BITMAP_PATCHES = (
 INPUT_PATCHES = (
     ("Native UI root hit candidate", "PRM_UI_HIT_CANDIDATE_RVA", 0x001FA1C2,
      bytes.fromhex("ff 90 b8 00 00 00")),
+    ("Native UI root update", "PRM_UI_WINDOW_UPDATE_RVA", 0x00207F49,
+     bytes.fromhex("ff 50 40 8b 36")),
+    ("Nonempty tooltip factory refresh", "PRM_TOOLTIP_REFRESH_RVA", 0x002284A2,
+     bytes.fromhex("ff 15 4c 75 d0 00")),
 )
 INPUT_RETURNS = (
     ("Central mouse ScreenToClient", "PRM_UI_MOUSE_RETURN_RVA", 0x00495BE1,
@@ -103,6 +109,8 @@ POPUP_LAYOUT = (
     (0x0019F9AB, bytes.fromhex("e8 d0 53 05 00")),
     (0x002284E2, bytes.fromhex("89 47 1c")),
     (0x0019F9B8, bytes.fromhex("68 70 fe ff ff 68 70 fe ff ff")),
+    (0x0022845E, bytes.fromhex("8b f9")),  # EDI = tooltip controller
+    (0x002284A8, bytes.fromhex("89 47 20")),  # Original clock return stored unchanged
 )
 
 # The status/buff hover routine owns a UITransBalloonText at scene +0x5E8.
@@ -212,6 +220,8 @@ def main():
             raise ValueError("Tooltip source controller: native load differs")
         if source_constant(source, "PRM_TOOLTIP_MANAGER_RVA") != 0x00A78D8C:
             raise ValueError("Tooltip source controller: source RVA differs")
+        if source_constant(source, "PRM_TOOLTIP_CLOCK_IAT_RVA") != 0x0090754C:
+            raise ValueError("Tooltip factory clock IAT: source RVA differs")
         print("Tooltip controller: native reference and source RVA match")
     except ValueError as error:
         failures.append(str(error))

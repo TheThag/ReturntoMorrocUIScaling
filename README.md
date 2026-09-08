@@ -3,7 +3,7 @@
 A 32-bit WinMM proxy that enlarges Return to Morroc's interface while keeping
 window contents, mouse interaction and character movement aligned.
 
-The current test build is **Phase 3D**. It includes complete-window scaling, topmost
+The current test build is **Phase 3E**. It includes complete-window scaling, topmost
 window input, dragging, attached NPC descriptions, player chat-room titles,
 character hover names, fullscreen map region previews and the compact minimap.
 The game executable is left unchanged on disk.
@@ -58,11 +58,21 @@ Phase 3D identifies buff explanations through their native scene controller,
 so their box and text grow to the left of the scaled buff icons. Actor speech
 keeps its own attachment rule.
 
-Old, inactive window records can now be reclaimed when the ownership table
-fills. This closes a path where a new tooltip could initially fall back to its
-native size. The reported inventory-entry flash still needs visual confirmation;
-first-appearance diagnostics now capture information a later F8 snapshot misses.
-The focused tooltip check is pending on `fix/tooltip-entry-and-buff-placement`;
+Phase 3E keeps an ordinary tooltip attached to the window that last produced
+its text, including the brief period before the game dismisses it after pointer
+exit. The latest Phase 3D log showed these popups already drawing at 200%, with
+space available in the owner table; their source translation could still change
+when the pointer left the window.
+
+The shared per-window update callback now respects the visible hover owner,
+including hotbar highlights that bypass the normal hit query. The manager's
+alternate background callback also receives window ownership, keeping the chat
+background and contents together while resizing. Both callbacks apply to any
+tracked window using those native paths, without a chat/hotbar class check.
+
+Inactive owner records remain reclaimable. First-appearance diagnostics include
+the tooltip's retained source and position adjustment. In-game confirmation of
+the three Phase 3E changes is pending on `fix/tooltip-entry-and-buff-placement`;
 published `main` remains Phase 2Z.
 
 ## Compatibility
@@ -174,7 +184,7 @@ argument forwarding. They do not launch the game.
 For a runtime report, press F8 in-game and inspect the generated log:
 
 ```sh
-python3 audit_phase3d.py /path/to/prm-ui-fix.log
+python3 audit_phase3e.py /path/to/prm-ui-fix.log
 ```
 
 The auditor reports missing samples as REVIEW. A successful diagnostic audit

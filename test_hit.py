@@ -84,6 +84,7 @@ typedef uint32_t DWORD;
 typedef uint8_t BYTE;
 /* Keep the extracted pointer arithmetic explicitly 32-bit. */
 typedef uint32_t ULONG_PTR;
+typedef DWORD (*PFN_GetTickCount)(void);
 typedef int BOOL;
 typedef void* HWND;
 typedef struct { LONG x,y; } POINT;
@@ -182,6 +183,10 @@ static DWORD g_owner_hit_queries,g_owner_hit_scoped,g_owner_hit_rejected;
 static DWORD g_owner_hit_unmatched;
 static OwnerHitSelection g_owner_hit_selection;
 static OwnerHitScope g_owner_hit_scope;
+static OwnerTooltipBinding g_owner_tooltip_binding;
+static PFN_GetTickCount g_owner_tooltip_clock;
+static DWORD g_tooltip_tick;
+static void owner_tooltip_publish_refresh(DWORD,DWORD,const OwnerInputRegion*);
 static int g_locked;
 static float g_scale;
 static DWORD g_thread_id;
@@ -405,6 +410,10 @@ static void source_reset(void) {
     g_owner_hit_unmatched=0;
     memset(&g_owner_hit_selection,0,sizeof(g_owner_hit_selection));
     memset(&g_owner_hit_scope,0,sizeof(g_owner_hit_scope));
+    memset(&g_owner_tooltip_binding,0,sizeof(g_owner_tooltip_binding));
+    (void)g_owner_tooltip_clock;
+    g_tooltip_tick=700;
+    *(DWORD*)((BYTE*)&g_native[OBJ_UNKNOWN]+0x20)=g_tooltip_tick;
     *(DWORD*)(g_fake_exe+PRM_UI_CAPTURE_RVA)=0;
     g_locked=0;
     g_scale=2.0f;
@@ -475,6 +484,11 @@ static void publish_remap(POINT* p,OwnerHitSelection* hit) {
     assert(hit->valid);
     owner_hit_publish(hit);
 }
+static void refresh_tooltip(const OwnerHitSelection* hit) {
+    owner_tooltip_publish_refresh(native_ptr(OBJ_UNKNOWN),g_tooltip_tick,
+                                  hit && hit->valid?&hit->region:0);
+    *(DWORD*)((BYTE*)&g_native[OBJ_UNKNOWN]+0x20)=g_tooltip_tick;
+}
 static DWORD query_at(LONG x,LONG y) {
     return owner_hit_query_scoped(g_manager,x,y);
 }
@@ -511,6 +525,7 @@ static void test_popup_offset_uses_fresh_selected_owner(void) {
     reset_all();
     add_region(0,OBJ_BASIC,g_ui_present_serial,80,902,300,1036,0,1440,20,20,0);
     p=(POINT){300,450}; publish_remap(&p,&before);
+    refresh_tooltip(&before);
     popup_class(&st,"UITransBalloonText");
     dx=7.0f; dy=-9.0f;
     owner_popup_offset(&st,250,900,&dx,&dy);
@@ -1038,15 +1053,17 @@ def main():
     args = parser.parse_args()
     source = args.source.read_text()
     types = "\n".join(extract_type(source, name) for name in (
-        "OwnerWindowState", "OwnerInputRegion", "OwnerHitSelection", "OwnerHitScope", "OwnerCaptureLink"))
+        "OwnerWindowState", "OwnerInputRegion", "OwnerHitSelection", "OwnerHitScope", "OwnerCaptureLink",
+        "OwnerTooltipBinding"))
     ordinary = (
         "s_equal", "rect_contains_point", "rect_area", "owner_native_capture",
         "owner_input_region_bounds", "owner_input_map_region",
-        "owner_input_map_capture", "owner_input_select_region", "owner_is_transient_tooltip", "owner_popup_offset",
+        "owner_input_map_capture", "owner_input_select_region", "owner_is_transient_tooltip",
+        "owner_tooltip_controller_is_current", "owner_tooltip_publish_refresh", "owner_popup_offset",
         "remap_owner_point_selected", "remap_owner_point", "owner_hit_publish",
         "owner_hit_prepare_scope", "owner_hit_reject_candidate")
     functions = "\n".join(
-        extract_definition(source, name) if name == "owner_input_select_region"
+        extract_definition(source, name) if name in ("owner_input_select_region", "owner_native_capture")
         else extract_function(source, name)
         for name in ordinary)
     functions += "\n" + extract_function_keep_callconv(source, "owner_hit_query_scoped")

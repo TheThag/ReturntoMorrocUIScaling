@@ -115,11 +115,17 @@ The factory constructs UITransBalloonText (4DCCF0, vtable D31CF0), registers it
 at 628500 and sets the native position at 6285AE. UICharInfoBalloonText uses
 59F8D0, vtable D3CD8C and registration at 59F9AB. Their cached pixels remain
 native until the final manager bitmap draw. The tooltip origin is translated
-through the fresh copied visually selected owner's scale/offset, then its
-pixels are enlarged once. The ordinary tooltip must be the exact controller
-E78D8C's +1C object; the character-info popup must match its selected source
-root's +19C8 field. Missing, changed or native-size sources retain the native
-origin. The inactive character-info position (-400,-400) remains hidden.
+through its source owner's scale/offset, then its pixels are enlarged once.
+The ordinary tooltip must be the exact controller E78D8C's +1C object. Phase
+3E observes the nonempty factory's clock call at 6284A2, preserving its native
+timeGetTime result and binding the copied source on every update. The +20
+timestamp is checked for invalidation; it is not treated as a unique revision.
+The expiry routine at 6286A0 can leave the popup visible for 100ms after the
+pointer leaves. During that interval its source remains the last factory's
+source, even when the pointer moves over another window. A new factory update
+replaces that binding, including two updates in the same clock tick.
+The character-info popup still matches its selected source root's +19C8 field.
+The inactive character-info position (-400,-400) remains hidden.
 
 The translucent background is a separate manager submission. UITransBalloonText's
 virtual +18 method (4E42A0) returns its background rectangle and true. The manager
@@ -130,6 +136,23 @@ bitmap preparation used by the cached text. The existing rectangle queue records
 its transform, and the enclosing scope is restored. This applies to every admitted
 window using that background path, without a buff-name or size heuristic.
 The cdecl bridge retains the caller's five original arguments and its cleanup.
+
+The manager's other background protocol calls virtual +9C followed by +A0.
+UINewChatWnd uses that second path: +A0 (579EC0) emits multiple rectangles
+through 492660. Phase 3E scopes the shared +A0 dispatch at 60BA14 using the
+window's actual vtable target. Those rectangles now receive the same owner as
+its cached bitmap, including while the native chat dimensions change. The F8
+reproduction showed the unowned inner chat background using anchor (0,1440)
+while the chat itself retained (0,720), producing a 720px separation at 200%.
+
+Window updates at 607F49 call every active root's virtual +40. UIShortCutWnd's
+592FD0 reads mouse globals E83374/E83378 there, bypassing the hit-query hooks.
+Phase 3E wraps this shared dispatch and checks the copied visible owner. A
+known root under another window or at a displayed miss receives an outside
+point for that callback so its own native code clears hover. The selected root
+receives the already inverse-mapped pair. Both globals are restored before
+the manager advances to another window. Capture, disabled input, stale samples
+and unknown roots retain native forwarding. This policy has no class-name test.
 
 UITransBalloonText also carries actor speech at 719D11..9E14. Those other
 instances receive a live bottom-center attachment and no source-window

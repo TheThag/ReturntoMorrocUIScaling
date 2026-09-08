@@ -13,6 +13,8 @@ production = (root / 'vtrace_thunks.S').read_text().split('/* Phase 2V:', 1)[1]
 production = production[production.index('.globl _owner_bitmap_primary_thunk'):]
 production = production.replace('_owner_bitmap_draw_c@32', 'bitmap_draw_stub')
 production = production.replace('_owner_background_draw_c@24', 'background_draw_stub')
+production = production.replace('_owner_tooltip_refresh_c@4', 'tooltip_refresh_stub')
+production = production.replace('_owner_window_update_c@4', 'window_update_stub')
 harness = r'''
 .text
 .globl _start
@@ -64,6 +66,22 @@ alternate_continue:
     cmpl $0x31415926, %esi
     jne fail
     cmpl $1, background_calls
+    jne fail
+    call _owner_tooltip_refresh_thunk
+    call check_state
+    cmpl $1, tooltip_calls
+    jne fail
+    cmpl $0x31415926, %esi
+    jne fail
+    movl $update_continue, _g_owner_window_update_continue
+    movl $list_node, %esi
+    movl $window_object, %ecx
+    jmp _owner_window_update_thunk
+update_continue:
+    call check_state
+    cmpl $0x98765432, %esi
+    jne fail
+    cmpl $1, update_calls
     jne fail
     movl $1, %eax
     xorl %ebx, %ebx
@@ -123,6 +141,18 @@ background_draw_stub:
     incl background_calls
     movl $0x11223344, %eax
     ret $24
+tooltip_refresh_stub:
+    cmpl $window_object, 4(%esp)
+    jne fail
+    incl tooltip_calls
+    movl $0x11223344, %eax
+    ret $4
+window_update_stub:
+    cmpl $window_object, 4(%esp)
+    jne fail
+    incl update_calls
+    movl $0x11223344, %eax
+    ret $4
 native_bitmap:
     cmpl $bitmap_object, %ecx
     jne fail
@@ -149,6 +179,10 @@ expected_sp: .long 0
 expected_bp: .long 0
 native_calls: .long 0
 background_calls: .long 0
+tooltip_calls: .long 0
+update_calls: .long 0
+list_node: .long 0x98765432
+_g_owner_window_update_continue: .long 0
 _g_owner_bitmap_primary_continue: .long 0
 _g_owner_bitmap_alternate_continue: .long 0
 window_object: .long 0
@@ -166,4 +200,4 @@ with tempfile.TemporaryDirectory(prefix='prm-thunks-') as tmp:
     subprocess.run(['clang', '-target', 'i386-linux-gnu', '-c', str(folder / 'thunks.S'), '-o', str(folder / 'thunks.o')], check=True)
     subprocess.run(['ld.lld', '-m', 'elf_i386', '-e', '_start', str(folder / 'thunks.o'), '-o', str(folder / 'thunks')], check=True)
     subprocess.run([str(folder / 'thunks')], check=True)
-print('PASS actual bitmap/background thunks: i386 forwarding, native ret20, wrapper ret32/24, cdecl caller cleanup, stack/register restoration, both continuations')
+print('PASS actual bitmap/background/tooltip/update thunks: i386 forwarding, native ret20, wrapper ret32/24/4, cdecl cleanup, stack/register restoration, list advancement and continuations')

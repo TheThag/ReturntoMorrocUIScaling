@@ -320,3 +320,20 @@ _owner_background_thunk:
   call _owner_background_draw_c@24
   popl %ebp
   ret
+
+/* Nonempty tooltip updates call the clock with EDI holding their controller.
+ * The bridge returns that same clock value for the native +20 timestamp. */
+.globl _owner_tooltip_refresh_thunk
+_owner_tooltip_refresh_thunk:
+  pushl %edi
+  call _owner_tooltip_refresh_c@4
+  ret
+
+/* Root update callback +40 polls mouse globals independently of hit queries.
+ * The replaced span also advances ESI to the next native list node. */
+.globl _owner_window_update_thunk
+_owner_window_update_thunk:
+  pushl %ecx
+  call _owner_window_update_c@4
+  movl (%esi), %esi
+  jmp *_g_owner_window_update_continue

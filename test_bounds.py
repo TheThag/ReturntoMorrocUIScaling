@@ -89,8 +89,13 @@ static OwnerInputRegion g_owner_input_regions[32];
 static OwnerHitSelection g_owner_hit_selection;
 static int owner_input_select_region(const POINT*,OwnerInputRegion*,DWORD*);
 static DWORD g_transient_tooltip_object;
+static OwnerTooltipBinding g_owner_tooltip_binding;
+static BYTE g_tooltip_controller[0x24];
 static int owner_is_transient_tooltip(DWORD object) {
     return object==g_transient_tooltip_object;
+}
+static int owner_tooltip_controller_is_current(DWORD controller) {
+    return controller==(DWORD)(ULONG_PTR)g_tooltip_controller;
 }
 static OwnerCaptureLink g_owner_capture_links[32];
 static DWORD g_owner_input_region_count,g_owner_capture_link_count;
@@ -176,7 +181,15 @@ PRODUCTION = "\n".join(extract_function(name) for name in (
 TESTS = r'''
 static void reset_all(void) {
     memset(&g_owner_hit_selection,0,sizeof(g_owner_hit_selection));
+    memset(&g_owner_tooltip_binding,0,sizeof(g_owner_tooltip_binding));
+    memset(g_tooltip_controller,0,sizeof(g_tooltip_controller));
     g_transient_tooltip_object=1;
+    g_owner_tooltip_binding.controller=(DWORD)(ULONG_PTR)g_tooltip_controller;
+    g_owner_tooltip_binding.refresh_tick=400;
+    g_owner_tooltip_binding.have_source=1;
+    g_owner_tooltip_binding.source.object_ptr=1;
+    g_owner_tooltip_binding.source.fit_scale=1.0f;
+    *(DWORD*)(g_tooltip_controller+0x20)=400;
     memset(g_owner_windows,0,sizeof(g_owner_windows));
     memset(g_owner_bitmap_draws,0,sizeof(g_owner_bitmap_draws));
     memset(&g_owner_bitmap_scope,0,sizeof(g_owner_bitmap_scope));
@@ -434,6 +447,10 @@ static void test_first_hover_popup(void) {
     g_owner_input_regions[0].fit_scale=2; g_owner_input_regions[0].present=g_ui_present_serial;
     g_owner_hit_selection.valid=1; g_owner_hit_selection.raw=(POINT){250,250};
     g_owner_hit_selection.region=g_owner_input_regions[0];
+    /* Model the native factory refresh that records this copied source before
+       creating/reusing the transient popup. */
+    g_owner_tooltip_binding.source=g_owner_input_regions[0];
+    g_owner_tooltip_binding.have_source=1;
     st=window(1,"UITransBalloonText");
     CHECK(owner_bitmap_prepare(1,120,80,180,40)); scope=g_owner_bitmap_scope;
     quad(&q,120,80,180,40); owner_bitmap_note_vertices(&q,4,&scope);
@@ -491,14 +508,14 @@ int main(void) {
 def main():
     types = "\n".join(extract_type(name) for name in (
         "OwnerWindowState", "OwnerBitmapDrawRec", "OwnerBitmapScope", "OwnerInputRegion",
-        "OwnerCaptureLink", "OwnerHitSelection"))
+        "OwnerCaptureLink", "OwnerHitSelection", "OwnerTooltipBinding"))
     code = PREFIX + types + STUBS + PRODUCTION + TESTS
     with tempfile.TemporaryDirectory(prefix="prm-bounds-test-") as directory:
         c_file = Path(directory) / "bounds.c"
         binary = Path(directory) / "bounds-test"
         c_file.write_text(code)
         compiler = shlex.split(os.environ.get("CC", "clang"))
-        flags = ["-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
+        flags = ["-m32", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
                  "-Wno-unused-variable", "-Wno-unused-parameter", "-fsanitize=address,undefined",
                  "-fno-omit-frame-pointer", str(c_file), "-o", str(binary)]
         subprocess.run(compiler + flags, check=True)
