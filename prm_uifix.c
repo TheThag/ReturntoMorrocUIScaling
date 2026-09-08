@@ -1,5 +1,5 @@
 /*
- * PRM UI FIX - Phase 3B screen bounds for owned UI
+ * PRM UI FIX - Phase 3C in-game settings and complete tooltip ownership
  * 32-bit WINMM proxy for Return to Morroc PRM.exe
  *
  * Goals for Phase 2F:
@@ -115,6 +115,8 @@ typedef struct _LOGFONTA {
 #define PRM_TOOLTIP_MANAGER_RVA 0x00A78D8CUL
 #define PRM_RECT_QUEUE_CALL_RVA    0x0009277FUL
 #define PRM_RECT_QUEUE_TARGET_RVA  0x000A0550UL
+#define PRM_BACKGROUND_DRAW_CALL_RVA   0x0020B9E8UL
+#define PRM_BACKGROUND_DRAW_TARGET_RVA 0x00092660UL
 #define PRM_IMAGE_QUEUE_CALL_RVA   0x00093058UL
 #define PRM_IMAGE_QUEUE_TARGET_RVA 0x000A0550UL
 #define PRM_PREVIEW_QUEUE_CALL_RVA 0x000AB829UL
@@ -232,9 +234,12 @@ typedef HRESULT (WINAPI *PFN_D3D7_SetTexture)(void*, DWORD, void*);
 typedef HRESULT (WINAPI *PFN_D3D7_GetTextureStageState)(void*, DWORD, DWORD, DWORD*);
 typedef HRESULT (WINAPI *PFN_D3D7_SetTextureStageState)(void*, DWORD, DWORD, DWORD);
 typedef HRESULT (WINAPI *PFN_DDS7_GetSurfaceDesc)(void*, void*);
+typedef HRESULT (WINAPI *PFN_DDS7_GetCaps)(void*, void*);
+typedef HRESULT (WINAPI *PFN_DDS7_GetAttachedSurface)(void*, void*, void**);
 typedef HRESULT (WINAPI *PFN_DDS7_Blt)(void*, RECT*, void*, RECT*, DWORD, void*);
 typedef HRESULT (WINAPI *PFN_DDS7_BltFast)(void*, DWORD, DWORD, void*, RECT*, DWORD);
 typedef HRESULT (WINAPI *PFN_DDS7_Flip)(void*, void*, DWORD);
+typedef ULONG    (WINAPI *PFN_DDS7_Release)(void*);
 
 static PFN_DirectDrawCreateEx g_real_DirectDrawCreateEx;
 
@@ -951,7 +956,7 @@ static void install_device_hooks(void* obj) {
     e=patch_vtable_slot(vt,31,(void*)hook_DrawPrimitiveVB,&r->orig_draw_vb);
     f=patch_vtable_slot(vt,32,(void*)hook_DrawIndexedPrimitiveVB,&r->orig_draw_indexed_vb);
     g=patch_vtable_slot(vt,35,(void*)hook_SetTexture,&r->orig_set_texture);
-    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 3B owner UI + isolated world input)");
+    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 3C owner UI + isolated world input)");
     else log_line("Direct3DDevice7 hooks: PARTIAL/FAILED");
 }
 
@@ -1513,6 +1518,7 @@ typedef void (__attribute__((thiscall)) *PFN_CursorDraw)(void*, LONG, LONG, void
 typedef void (__attribute__((thiscall)) *PFN_SpriteSubmit)(void*, void*, DWORD);
 typedef DWORD (__attribute__((thiscall)) *PFN_BitmapDraw)(void*, LONG, LONG, LONG, LONG, DWORD);
 typedef DWORD (__attribute__((thiscall)) *PFN_WindowOverlayDraw)(void*);
+typedef DWORD (*PFN_WindowBackgroundDraw)(LONG,LONG,LONG,LONG,DWORD);
 static PFN_OwnerHelperA g_owner_helper_a;
 static PFN_OwnerHelperBC g_owner_helper_b;
 static PFN_OwnerHelperBC g_owner_helper_c;
@@ -1521,10 +1527,12 @@ static PFN_CursorDraw g_cursor_draw;
 static PFN_SpriteSubmit g_sprite_submit;
 static PFN_SpriteSubmit g_owner_bitmap_submit;
 static PFN_WindowOverlayDraw g_owner_overlay_draw,g_owner_special_draw,g_owner_map_draw,g_owner_minimap_draw;
+static PFN_WindowBackgroundDraw g_owner_background_draw;
 void* g_owner_bitmap_primary_continue;
 void* g_owner_bitmap_alternate_continue;
 extern void owner_bitmap_primary_thunk(void);
 extern void owner_bitmap_alternate_thunk(void);
+extern void owner_background_thunk(void);
 static int vtrace_patch_rel_jmp(BYTE*, DWORD, void*);
 /* Kept only because the shared thunk object still contains the old 2J entry
    stubs. They are never installed in Phase 2Q. */
@@ -2238,6 +2246,22 @@ DWORD WINAPI owner_bitmap_draw_c(DWORD obj, void* dc, void* original,
     return rv;
 }
 
+/* The manager draws a translucent background before it submits the cached
+ * text bitmap (VA 60B9E8). EDI identifies that same UIWindow. Give this direct
+ * rectangle the window's whole transform too; otherwise it reaches fallback
+ * grouping while its text is already owned, splitting buff explanations. */
+DWORD WINAPI owner_background_draw_c(DWORD obj,LONG x,LONG y,LONG w,LONG h,DWORD color) {
+    OwnerBitmapScope saved=g_owner_bitmap_scope; DWORD rv=0;
+    BYTE* self=(BYTE*)(ULONG_PTR)obj;
+    g_owner_bitmap_scope.object_ptr=0; g_owner_bitmap_scope.thread=0;
+    if(self && mem_readable(self+0x14,16))
+        owner_bitmap_prepare(obj,*(LONG*)(self+0x1c),*(LONG*)(self+0x20),
+            *(LONG*)(self+0x14),*(LONG*)(self+0x18));
+    if(g_owner_background_draw) rv=g_owner_background_draw(x,y,w,h,color);
+    g_owner_bitmap_scope=saved;
+    return rv;
+}
+
 static DWORD owner_bitmap_window_draw(void* self, PFN_WindowOverlayDraw original) {
     OwnerBitmapScope saved=g_owner_bitmap_scope; DWORD rv=0;
     g_owner_bitmap_scope.object_ptr=0; g_owner_bitmap_scope.thread=0;
@@ -2382,6 +2406,15 @@ static int owner_bitmap_patch_span_valid(DWORD rva, BYTE slot) {
     return g_exe && g_exe_size>=rva+6 && p[0]==0xff && p[1]==0x53 && p[2]==slot &&
            p[3]==0x8b && p[4]==0x5d && p[5]==0xdc;
 }
+static int owner_background_call_valid(void) {
+    static const BYTE args[15]={0xff,0x75,0xf4,0xff,0x75,0xec,0xff,0x75,0xe8,
+                                0xff,0x75,0xe4,0xff,0x75,0xe0};
+    DWORD i; BYTE* at;
+    if(!validated_rel_call(PRM_BACKGROUND_DRAW_CALL_RVA,PRM_BACKGROUND_DRAW_TARGET_RVA)) return 0;
+    at=(BYTE*)g_exe+PRM_BACKGROUND_DRAW_CALL_RVA-15;
+    for(i=0;i<15;++i) if(at[i]!=args[i]) return 0;
+    return 1;
+}
 static void install_owner_bitmap_hooks(void) {
     BYTE* base=(BYTE*)g_exe;
     if(!g_owner_bitmap_enabled || !g_owner_submit_enabled || g_owner_bitmap_hooks_installed) return;
@@ -2395,6 +2428,7 @@ static void install_owner_bitmap_hooks(void) {
        !validated_rel_call(PRM_MINIMAP_QUEUE_CALL_RVA,PRM_MINIMAP_QUEUE_TARGET_RVA) ||
        !validated_rel_call(PRM_MINIMAP_MARKER_QUEUE_CALL_RVA,PRM_MINIMAP_MARKER_QUEUE_TARGET_RVA) ||
        !validated_rel_call(PRM_RECT_QUEUE_CALL_RVA,PRM_RECT_QUEUE_TARGET_RVA) ||
+       !owner_background_call_valid() ||
        !validated_rel_call(PRM_IMAGE_QUEUE_CALL_RVA,PRM_IMAGE_QUEUE_TARGET_RVA) ||
        !validated_rel_call(PRM_PREVIEW_QUEUE_CALL_RVA,PRM_PREVIEW_QUEUE_TARGET_RVA) ||
        !validated_rel_call(PRM_MAP_LINE_QUEUE_CALL_RVA,PRM_MAP_LINE_QUEUE_TARGET_RVA) ||
@@ -2408,6 +2442,7 @@ static void install_owner_bitmap_hooks(void) {
     g_owner_special_draw=(PFN_WindowOverlayDraw)(base+PRM_SPECIAL_DRAW_TARGET_RVA);
     g_owner_map_draw=(PFN_WindowOverlayDraw)(base+PRM_MAP_DRAW_TARGET_RVA);
     g_owner_minimap_draw=(PFN_WindowOverlayDraw)(base+PRM_MINIMAP_DRAW_TARGET_RVA);
+    g_owner_background_draw=(PFN_WindowBackgroundDraw)(base+PRM_BACKGROUND_DRAW_TARGET_RVA);
     g_owner_bitmap_primary_continue=base+PRM_BITMAP_PRIMARY_RVA+6;
     g_owner_bitmap_alternate_continue=base+PRM_BITMAP_ALTERNATE_RVA+6;
     /* Install queue consumers first. If a later patch fails, scope remains off
@@ -2426,10 +2461,11 @@ static void install_owner_bitmap_hooks(void) {
        owner_submit_patch_rel_call(base+PRM_MAP_DRAW_CALL_RVA,(void*)owner_map_draw_scoped) &&
        owner_submit_patch_rel_call(base+PRM_OVERLAY_DRAW_CALL_RVA,(void*)owner_overlay_draw_scoped) &&
        owner_submit_patch_rel_call(base+PRM_SPECIAL_DRAW_CALL_RVA,(void*)owner_special_draw_scoped) &&
+       owner_submit_patch_rel_call(base+PRM_BACKGROUND_DRAW_CALL_RVA,(void*)owner_background_thunk) &&
        vtrace_patch_rel_jmp(base+PRM_BITMAP_PRIMARY_RVA,6,(void*)owner_bitmap_primary_thunk) &&
        vtrace_patch_rel_jmp(base+PRM_BITMAP_ALTERNATE_RVA,6,(void*)owner_bitmap_alternate_thunk)) {
         g_owner_bitmap_hooks_installed=1;
-        log_line("OwnerBitmap hooks: OK bitmap=2 overlay=1 special=1 map=1 minimap=1 queue=10 offscreen=2");
+        log_line("OwnerBitmap hooks: OK bitmap=2 background=1 overlay=1 special=1 map=1 minimap=1 queue=10 offscreen=2");
     } else log_line("OwnerBitmap hooks: patch failed; owner scopes disabled");
 }
 
@@ -3096,7 +3132,7 @@ static void maybe_dump_owner_windows(void) {
     static OwnerInputRegion active[64];
     if(!g_owner_submit_enabled) return;
     if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_OWNER_DIAGNOSTICS); if(!(k&1)) return;
-    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 3B present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 3C present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
     s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
     s_append(line,sizeof(line)," ownerMouse="); s_append_uint(line,sizeof(line),g_owner_mapped_mouse);
@@ -3760,6 +3796,9 @@ static void ui_settings_commit(void) {
 }
 static void ui_settings_poll(void);
 static void ui_settings_publish_snapshot(void);
+static int ui_settings_is_open(void);
+static void ui_settings_draw_surface(void* target);
+static void ui_settings_draw_failed(void);
 
 static void ui_present_boundary(const char* method) {
     char line[224]; DWORD rects=g_ui_frame_rect_count, owner_rects=g_owner_frame_member_count, submits=g_owner_submit_count;
@@ -3788,7 +3827,7 @@ static void ui_present_boundary(const char* method) {
         log_line(line);
     }
     if(g_owner_submit_enabled && g_ui_present_serial>0 && (g_ui_present_serial%1200UL)==0) {
-        line[0]=0; s_append(line,sizeof(line),"3B heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+        line[0]=0; s_append(line,sizeof(line),"3C heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
         s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
         s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
@@ -3829,6 +3868,117 @@ static int blt_is_present(void* self, const RECT* dst, void* src, const RECT* sr
     sw = srcRect ? (srcRect->right-srcRect->left) : g_ui_screen_w;
     sh = srcRect ? (srcRect->bottom-srcRect->top) : g_ui_screen_h;
     return dw>g_ui_screen_w/2 && dh>g_ui_screen_h/2 && sw>g_ui_screen_w/2 && sh>g_ui_screen_h/2;
+}
+
+/* The settings panel is composed into the game's render surface immediately
+ * before the real present copy/flip.  A large offscreen Blt can look exactly
+ * like a present, so require the destination to be the primary surface and
+ * the source to be the exact render-target viewport.  This also rejects the
+ * reverse copy (render target as destination), which would otherwise paint
+ * the panel into an old/display surface and carry it into a later frame. */
+static int ui_settings_surface_caps(void* surf, DWORD* out_caps) {
+    void** vt;
+    PFN_DDS7_GetCaps get_caps;
+    BYTE caps[16];
+    unsigned int i;
+    if(out_caps) *out_caps=0;
+    if(!surf || !mem_readable(surf,4)) return 0;
+    vt=*(void***)surf;
+    if(!vt || !mem_readable(vt+14,4)) return 0;
+    get_caps=(PFN_DDS7_GetCaps)vt[14];
+    if(!get_caps) return 0;
+    for(i=0;i<sizeof(caps);++i) caps[i]=0;
+    if(get_caps(surf,caps)<0) return 0;
+    if(out_caps) *out_caps=*(DWORD*)caps;
+    return 1;
+}
+
+static int ui_settings_source_is_full(void* src, const RECT* srcRect) {
+    DWORD w=0,h=0;
+    if(!src || g_ui_screen_w<=0 || g_ui_screen_h<=0) return 0;
+    if(!surface_dimensions(src,&w,&h)) return 0;
+    if(w!=(DWORD)g_ui_screen_w || h!=(DWORD)g_ui_screen_h) return 0;
+    if(srcRect && (srcRect->left!=0 || srcRect->top!=0 ||
+                   srcRect->right!=(LONG)w || srcRect->bottom!=(LONG)h)) return 0;
+    return 1;
+}
+
+static void ui_settings_present_source(void* self, void* src, const RECT* srcRect) {
+    DWORD caps=0;
+    if(!ui_settings_is_open() || !self || !src || self==src) return;
+    if(is_render_target(self)) return;
+    if(!ui_settings_surface_caps(self,&caps)) {
+        ui_settings_draw_failed();
+        return;
+    }
+    if(!(caps&0x00000200UL)) return; /* DDSCAPS_PRIMARYSURFACE */
+    if(!is_render_target(src) || !ui_settings_source_is_full(src,srcRect)) {
+        ui_settings_draw_failed();
+        return;
+    }
+    ui_settings_draw_surface(src);
+}
+
+/* Flip is called on the front surface.  A non-NULL target override is the
+ * caller's explicit member of the flipping chain; otherwise ask the front
+ * surface for its attached back buffer.  GetAttachedSurface adds a COM
+ * reference, so release that exact interface after drawing. */
+static void ui_settings_draw_flip(void* self, void* targetOverride) {
+    void* target=targetOverride;
+    void** vt;
+    PFN_DDS7_GetAttachedSurface get_attached;
+    PFN_DDS7_Release release;
+    DWORD self_caps=0;
+    DWORD caps[4]={0x00000004UL,0,0,0}; /* DDSCAPS_BACKBUFFER */
+    if(!ui_settings_is_open() || !self) return;
+    if(!ui_settings_surface_caps(self,&self_caps) || !(self_caps&0x00000200UL)) {
+        ui_settings_draw_failed();
+        return;
+    }
+    if(target && target!=self) {
+        ui_settings_draw_surface(target);
+        return;
+    }
+    if(target==self) {
+        ui_settings_draw_failed();
+        return;
+    }
+    if(!mem_readable(self,4)) {
+        ui_settings_draw_failed();
+        return;
+    }
+    vt=*(void***)self;
+    if(!vt || !mem_readable(vt+12,4)) {
+        ui_settings_draw_failed();
+        return;
+    }
+    get_attached=(PFN_DDS7_GetAttachedSurface)vt[12];
+    if(!get_attached) {
+        ui_settings_draw_failed();
+        return;
+    }
+    target=0;
+    if(get_attached(self,caps,&target)<0 || !target) {
+        ui_settings_draw_failed();
+        return;
+    }
+    if(!mem_readable(target,4)) {
+        ui_settings_draw_failed();
+        return;
+    }
+    vt=*(void***)target;
+    if(!vt || !mem_readable(vt+2,4)) {
+        ui_settings_draw_failed();
+        return;
+    }
+    release=(PFN_DDS7_Release)vt[2];
+    if(target==self) {
+        if(release) release(target);
+        ui_settings_draw_failed();
+        return;
+    }
+    ui_settings_draw_surface(target);
+    if(release) release(target);
 }
 
 /* Deep tracing established this discriminator for the classic 2D UI family. */
@@ -4047,20 +4197,31 @@ static HRESULT WINAPI hook_EndScene(void* self) {
 
 static HRESULT WINAPI hook_SurfaceFlip(void* self, void* targetOverride, DWORD flags) {
     SurfHookRec* r=surf_rec(self); PFN_DDS7_Flip fn=r?(PFN_DDS7_Flip)r->orig_flip:0;
-    if(g_ui_frame_rect_count || g_owner_frame_member_count || g_owner_bitmap_frame_calls) ui_present_boundary("Flip");
+    if(g_ui_frame_rect_count || g_owner_frame_member_count || g_owner_bitmap_frame_calls) {
+        ui_present_boundary("Flip");
+    }
+    ui_settings_draw_flip(self,targetOverride);
     return fn ? fn(self,targetOverride,flags) : (HRESULT)0x80004005UL;
 }
 
 static HRESULT WINAPI hook_SurfaceBlt(void* self, RECT* dst, void* src, RECT* srcRect, DWORD flags, void* fx) {
     SurfHookRec* r=surf_rec(self); PFN_DDS7_Blt fn=r?(PFN_DDS7_Blt)r->orig_blt:0;
-    if(blt_is_present(self,dst,src,srcRect)) ui_present_boundary("Blt");
+    if(blt_is_present(self,dst,src,srcRect)) {
+        ui_present_boundary("Blt");
+    }
+    /* A prior reverse copy can publish the owner frame before the final
+       primary copy. An open panel still belongs on that final copy. */
+    ui_settings_present_source(self,src,srcRect);
     return fn ? fn(self,dst,src,srcRect,flags,fx) : (HRESULT)0x80004005UL;
 }
 
 static HRESULT WINAPI hook_SurfaceBltFast(void* self, DWORD x, DWORD y, void* src, RECT* srcRect, DWORD flags) {
     SurfHookRec* r=surf_rec(self); PFN_DDS7_BltFast fn=r?(PFN_DDS7_BltFast)r->orig_bltfast:0;
     (void)x;(void)y;
-    if((g_ui_frame_rect_count || g_owner_frame_member_count || g_owner_bitmap_frame_calls) && src && surface_is_screenish(self) && surface_is_screenish(src)) ui_present_boundary("BltFast");
+    if((g_ui_frame_rect_count || g_owner_frame_member_count || g_owner_bitmap_frame_calls) && src && surface_is_screenish(self) && surface_is_screenish(src)) {
+        ui_present_boundary("BltFast");
+    }
+    ui_settings_present_source(self,src,srcRect);
     return fn ? fn(self,x,y,src,srcRect,flags) : (HRESULT)0x80004005UL;
 }
 
@@ -4178,7 +4339,7 @@ static void install_phase2_hooks(void) {
     if(!g_exe) return;
     ok=patch_import(g_exe,"DDRAW.dll","DirectDrawCreateEx",(void*)hook_DirectDrawCreateEx,(void**)&g_real_DirectDrawCreateEx);
     log_line(ok ? "DirectDrawCreateEx IAT hook: OK" : "DirectDrawCreateEx IAT hook: NOT FOUND");
-    if(ok) log_line("Phase 3B renderer armed: all-window owner UI + isolated world input");
+    if(ok) log_line("Phase 3C renderer armed: all-window owner UI + isolated world input");
 }
 
 /* ---------- real WINMM ---------- */
@@ -4212,7 +4373,7 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Phase 3B Owned UI Screen Bounds ===");
+    log_line("=== PRM UI FIX Phase 3C In-Game Settings and Tooltip Ownership ===");
     log_line("Proxy DLL loaded");
     if (g_GetPrivateProfileIntA) {
         g_font_enabled = (int)g_GetPrivateProfileIntA("Font", "Enabled", 1, g_ini_path);
@@ -4363,7 +4524,7 @@ static void initialize_mod(void) {
     owner_submit_install_hooks();
     vtrace_install_submit_hooks();
     vtrace_install_active_vtables();
-    log_line("Phase 3B armed: F2 settings; F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
+    log_line("Phase 3C armed: F2 settings; F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
     log_line("Initialization complete");
 }
 

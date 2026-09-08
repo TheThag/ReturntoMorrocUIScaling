@@ -3,7 +3,7 @@
 A 32-bit WinMM proxy that enlarges Return to Morroc's interface while keeping
 window contents, mouse interaction and character movement aligned.
 
-The current test build is **Phase 3B**. It includes complete-window scaling, topmost
+The current test build is **Phase 3C**. It includes complete-window scaling, topmost
 window input, dragging, attached NPC descriptions, player chat-room titles,
 character hover names, fullscreen map region previews and the compact minimap.
 The game executable is left unchanged on disk.
@@ -23,15 +23,15 @@ Fullscreen UI keeps the existing native-size policy with `UI.ScaleGlobal=0`.
 
 ## Live settings with F2
 
-Press **F2** while the game is focused to open the UI FIX settings panel. Change
-the percentage (100–200), enable/disable scaling, choose crisp filtering, or
-switch Keep on screen. **Apply** changes the running game; **Save** also stores
-those four settings in `prm-ui-fix.ini`. **Close**, **Esc**, or **F2** returns to
-the game. Ordinary Apply changes last until restart.
+Press **F2** while the game is focused to show settings inside the game.
+Use **Up/Down** to select a row and **Left/Right** to change it:
+scale (100–200% in 5% steps), scaling enabled, crisp filtering, or Keep on screen.
+Press **Enter** to apply, **S** to save and close, or **F2/Esc** to close.
+Save writes those four settings to `prm-ui-fix.ini`; unsaved changes reset on restart.
 
-The panel is a small native window owned by the game. Changes take effect at a
-frame boundary after any current game drag has ended. It does not change font
-metrics, resolution, or world movement settings. No chat command hook is needed.
+The panel draws into the game frame and uses the game's existing window.
+Changes take effect at a frame boundary after any current game drag has ended.
+An unavailable drawing API closes the panel and returns input to the game.
 
 ## Window click ownership
 
@@ -51,13 +51,14 @@ Transient explanations and character-info popups now receive bitmap ownership
 on their first draw. Control-based explanations follow their visible source
 window. The player HP/SP gauge also receives ownership and uses its live center
 on every frame, fixing the stale group position that could make it drift during
-movement. Name/bar spacing still needs confirmation in the combined game test.
+movement. The user confirmed the corrected health-bar and character-name alignment.
 
-Phase 3B's focused in-game check is pending: use F2 to try different scales,
-place windows near each edge with F5 scaling off, then enable scaling and check
-that they fit, remain clickable, and drag smoothly. Check the connected Basic
-Info/menu block too, then press F8. This build is tested locally on
-`fix/ui-screen-bounds`; published `main` remains Phase 2Z.
+Phase 3B's external settings window switched to the desktop and left the game
+apparently stuck; its 150% save completed later. Phase 3C replaces that panel
+with the in-game version.
+It also gives separately drawn translucent tooltip boxes the same window
+transform as their text. The focused F2 and buff-tooltip check is pending on
+`fix/in-game-settings-buff-tooltip`; published `main` remains Phase 2Z.
 
 ## Compatibility
 
@@ -70,7 +71,7 @@ The tested executable has SHA256:
 ```
 
 Manual testing used Wine/Lutris at 3440×1440, initially at 133% UI scale and
-then at 200%. The supplied INI retains the latest 200% configuration.
+then at 200%. The supplied INI now uses the requested 150% configuration.
 See [validation](VALIDATION.md) for the checks and their coverage.
 
 ## Install
@@ -91,9 +92,9 @@ proxy and restore the files you backed up.
 
 | Setting | Supplied value | Purpose |
 | --- | --- | --- |
-| `UI.ScalePercent` | `200` | UI enlargement, from 100% to 200% |
+| `UI.ScalePercent` | `150` | UI enlargement, from 100% to 200% |
 | `UI.ScreenWidth` / `UI.ScreenHeight` | `3440` / `1440` | Game render resolution used for UI anchors |
-| `UI.KeepOnScreen` | `1` (default when absent) | Keep enlarged windows within the screen |
+| `UI.KeepOnScreen` | `1` | Keep enlarged windows within the screen |
 | `UI.SharpFilter` | `0` | Native smoothing; use `1` for point sampling |
 | `Font.AddSize` | `0` | Preserve native font metrics and layout |
 | `OwnerBitmap.Enabled` | `1` | Complete-window ownership and scaling |
@@ -164,7 +165,7 @@ argument forwarding. They do not launch the game.
 For a runtime report, press F8 in-game and inspect the generated log:
 
 ```sh
-python3 audit_phase3b.py /path/to/prm-ui-fix.log
+python3 audit_phase3c.py /path/to/prm-ui-fix.log
 ```
 
 The auditor reports missing samples as REVIEW. A successful diagnostic audit

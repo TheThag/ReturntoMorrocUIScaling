@@ -1,105 +1,85 @@
-# Phase 3B validation
+# Phase 3C validation
 
-The user accepted Phase 3A as "working well". Phase 3B implements the subsequent
-requests to keep enlarged movable windows inside the screen and provide live
-settings, plus the later tooltip and moving-bar reports. Its focused in-game
-test is pending. Work is on `fix/ui-screen-bounds`;
-public `main` still contains Phase 2Z.
+The user confirmed Phase 3B's health-bar and character-name alignment. They also
+reported that buff explanation text was outside its box, and that F2 switched
+to the desktop settings window and left the game stuck after Apply/Save.
+Phase 3C addresses those two reports on `fix/in-game-settings-buff-tooltip`.
+Public `main` remains Phase 2Z. The new focused in-game check is pending.
 
 ## Artifact identity
 
+The DLL is 195072 bytes, PE32/i386, with exactly 185 WinMM exports and no
+static imports, IAT or delay imports. All 15 host harnesses passed.
+
 | Artifact | SHA256 |
 | --- | --- |
-| `winmm.dll` | `23db0d182da953afc791a0c33c4e5008dc5db4340a9157fcbfd44ccd2b0d8de4` |
-| Target `PRM.exe` | `5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b` |
-| `prm-ui-fix.ini` | `bea46a21132b93954950d0a433a217f10eb77265fb5287e1d5f791ce473966bb` |
+| `winmm.dll` | `d81890b5c1ac6510afb627b47a5e95f4cd5693f965986a3363157cbc04fe3537` |
+| `prm-ui-fix.ini` | `8f1de12782d8a1579f97cece702bf3d361a262014918afbbe04ba7fa1e5a5c36` |
 
-The DLL is 194048 bytes, PE32/i386, with exactly 185 WinMM exports and no static
-imports, IAT or delay imports. All 14 host harnesses passed in the final run. The INI
-retains 3440×1440, 200%, native smoothing and unchanged font metrics. KeepOnScreen
-defaults to enabled when absent. PRM.exe is unchanged on disk.
+The target PRM.exe remains unchanged, with SHA256
+`5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b`.
+The supplied INI uses 3440×1440, the user's requested 150%, native smoothing,
+and unchanged font metrics, with KeepOnScreen enabled.
 
-## Behavior and verification
+## Changes and evidence
 
-Ordinary owned windows receive a persistent correction if their enlarged bounds
-cross a screen edge. Their scale is reduced uniformly when needed to fit. The
-same scale and offset pass through whole-bitmap queues, final drawing, input
-regions, selected-owner hit tests and captured-child mapping. Native window
-positions are never rewritten. Cursor-following descriptions also fit; accepted
-world-attachment and native fullscreen policies remain intact.
+The translucent tooltip background is drawn before its cached text bitmap.
+UITransBalloonText's virtual +18 method at 4E42A0 returns a background rectangle
+and true; the manager calls cdecl 492660 at 60B9E8. That rectangle previously
+escaped bitmap ownership and used the geometry fallback while the text used its
+window's transform. A narrow wrapper now carries the manager's EDI owner into
+whole-window preparation for the rectangle. The existing rectangle queue freezes
+the transform, just as it does for text tiles. The enclosing scope and native
+arguments are preserved. This covers all admitted windows using that manager
+background path, including buff explanations. Actor/name/gauge anchor policies
+are unchanged.
 
-The native Basic Info/Menu relationship is verified at 5FF205, 5FF237..248,
-ACF733..73F and 606ADF. Their union receives one correction. Membership, object
-identity, parentage, enabled state and IDs are checked, including the cached
-same-frame path. Unknown neighboring windows keep independent corrections.
+F2 now draws settings into the game frame using DirectDraw GetDC/ReleaseDC and
+GDI. A subclass on the existing game window queues keyboard commands; the
+present thread owns the draft and commits changes after any drag ends. There
+is no separate settings window, message thread, focus change, or display-mode
+change. Enter applies; S saves and closes; F2/Esc closes. Save writes only the
+four UI settings. Rendering failure closes the panel and releases input.
 
-F2 opens a native settings panel owned by the game. Its separate message thread
-publishes an atomic request; the render boundary applies it after any game
-capture ends. Apply changes runtime settings. Save writes only the four relevant
-UI keys. The original native click, capture, map, minimap, world-ray and cursor
-hook locations are retained.
+The initial incident snapshot had no apply/save completion and still specified
+200%. A later capture, taken after detecting an INI change during packaging,
+records both Apply and Save completing at 150%, with KeepOnScreen enabled.
+The later file is preserved. The reported desktop switch and stuck presentation
+support removing the external focus-taking panel; these captures do not establish
+the exact Wine/DirectDraw focus-loss internals or current visual game state.
 
-Local checks:
+## Local verification
 
-- `test_bounds.py`: enabled fitting at four corners, 125/133/150/175/200%, and
-  720/1080/1440-high screens; oversized fitting, input round trips, persistent
-  edge correction, inward movement, frozen queued scales/offsets, captured input,
-  independent windows and disabled/world/native-size policies.
-  It also exercises first-draw/revisited transient popups, a control-derived
-  popup origin, hidden character-info caches, actor speech while UI is hovered,
-  and the player gauge following ten successive native positions.
-- `test_connected.py`: actual active manager-list traversal and native 32-bit
-  objects, both Basic/Menu orders, five scales, whole-pair bounds and spacing,
-  next-frame movement, missing/disabled/parented roots, wrong IDs and reused
-  vtables. A cached-vtable regression was reproduced, fixed and rechecked.
-- Existing bitmap, drag, native hit ownership, map, minimap, capture and present
-  harnesses pass. Their baseline mode explicitly disables KeepOnScreen; the new
-  enabled-feature fixtures cover the changed behavior. ASan/UBSan are used for
-  the native object and ownership fixtures.
-- `test_settings.py` exercises percentage validation, atomic requests, deferred
-  commit, Apply without file writes, four-key Save and partial-save failures,
-  F2 gating, coherent settings snapshots, stale queued closes and window
-  lifecycle. Native UI structures and creation
-  behavior are checked with the i386 stdcall ABI and ASan/UBSan, separately from
-  actual Wine rendering.
-- `test_hit.py` reproduces the old-position hover bug with a displayed-UI miss
-  inside the native chat rectangle. The scoped native query rejects that ghost
-  hit across stationary frames and still permits unknown native windows.
-  Tooltip origin correction requires an exact native controller/source link,
-  with rejection of other speech instances and unrelated hovered windows.
-- Twelve synthetic `audit_phase3b.py` fixtures accept healthy bounds and reject
-  missing/newer runs, missing samples, invalid or out-of-screen regions, disabled
-  fitting, invalid scale and operational failures. Actor-attached room titles
-  and native fullscreen regions keep their documented policies.
-- `verify_hooks.py` validates the existing 19 direct callsites, bitmap/input
-  patch spans and return sites, viewport fields, connected layout, popup
-  constructors/registration and player-gauge live placement evidence.
-  No additional PRM callsite is patched for fitting or the settings panel.
+- The background fixture exercises actual scope preparation, bitmap ownership
+  and vertex scaling with native-sized fake objects, including first draw,
+  queued background/text agreement, nested scopes and unknown-owner forwarding.
+- `test_thunks.py` executes the production assembly on i386: both bitmap
+  continuations, the background's EDI owner, five cdecl arguments, return value,
+  native caller cleanup and preserved registers.
+- `test_settings.py` exercises the actual header and core Apply/Save functions
+  with the i386 stdcall ABI, keyboard routing, deferred opening/commit during
+  capture, settings persistence, DC cleanup and draw failures.
+- `test_present.py` exercises Blt/BltFast/Flip target selection, original argument
+  and return forwarding, drawing before presentation, reverse/offscreen copy
+  exclusions and COM reference handling.
+- Existing ownership, hit selection, captured-child input, bounds, connected
+  Basic Info/Menu, cursor, world input, drag, filtering, map and minimap tests
+  retain their coverage. The bounds fixture covers 125/133/150/175/200% and
+  720/1080/1440-high screens.
+- `verify_hooks.py` checks 20 direct callsites, two bitmap patch spans, one input
+  patch span, offscreen and mouse return sites, plus native layout evidence.
+  Only the new manager background call is added to the PRM patch set.
 
-The native world-ray, cursor, map/minimap and capture-tree paths retain their
-existing implementations. Assembly thunks, export definitions and the build
-script are unchanged. `ui_settings.h` is now a required source file for rebuilding.
+These host fixtures use fake Windows/COM services and do not launch the game.
+The PE32/i386 DLL retains 185 WinMM exports and dynamic API loading. The export
+definition, forwarder assembly and build script are unchanged.
 
-The moving HP/SP bar is the exact UIPlayerGage window previously excluded by
-the class-name gate. Its live bitmap center now avoids stale geometry groups.
-The original character-name center policy is retained; the reported name/bar
-overlap needs visual confirmation with the corrected bar. This build also
-admits the exact transient explanation and character-info popup classes so
-their first bitmap draw has ownership without a grouping warm-up frame.
+## Pending in-game check
 
-## Runtime evidence and pending check
-
-The saved accepted Phase 3A F8 audit passes: 22280 hit queries, 3356 selected-owner
-scopes, 5416 competing candidates rejected, with Basic Info, Menu, minimap, chat,
-quickslot and shortcut input regions. Normal unsupported/unowned draw counts are
-informational. This supports the user's acceptance of the preceding click fix.
-
-Phase 3B has not yet been exercised in-game. Restart, press F2, and try scale
-changes with Keep on screen enabled. Place windows at the edges with F5 scaling
-off, enable it, then check bounds, clicks and dragging. Include the connected
-Basic Info/menu block. Close the panel with F2/Esc and confirm game input returns.
-Hover descriptions at displayed controls and at their old unscaled positions,
-switch controls and return, then walk and check the name/HP/SP alignment.
-Press F8 after the test. The log auditor reports sampled bounds; host tests and
-native API checks do not establish actual Wine panel appearance or every game
-state. The working Phase 3A DLL/configuration is backed up before installation.
+Fully exit the stuck game and restart to load Phase 3C. Check a buff explanation
+at the displayed icon, then switch buffs and return. Open F2, adjust the scale
+with Left/Right, apply with Enter, save and close with S, and reopen/close with
+F2 or Esc. Confirm the game remains visible and movement/clicks resume. Press
+F8 after the combined check. The new bounds auditor reads Phase 3C snapshots;
+it cannot determine visual tooltip alignment or fullscreen focus behavior.
+The preceding Phase 3B DLL and configuration are backed up before installation.

@@ -1,6 +1,6 @@
 # PRM UI FIX implementation notes
 
-Phase 3B. These notes describe the native client paths and the implemented
+Phase 3C. These notes describe the native client paths and the implemented
 ownership rules. For installation and settings, see [README](../README.md).
 
 ## Screen bounds and live settings
@@ -37,16 +37,19 @@ and hover names retain their accepted actor attachment rules. Native-size
 fullscreen UI remains under its previous policy rather than the movable-window
 fit policy. The geometry fallback is unchanged.
 
-F2 creates an owned native settings window on a dedicated UI thread. A packed
-atomic mailbox transfers requests to the existing present boundary. Only that
-boundary changes the running game settings, deferring while native capture is
-active. Apply changes runtime settings; Save also writes only ScalePercent,
-Enabled, SharpFilter and KeepOnScreen in the UI section. The DLL keeps dynamic
-API resolution and empty import directories. Window creation, message structs,
-and keyboard navigation follow the Microsoft definitions for
-[CreateWindowExA](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createwindowexa),
-[MSG](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-msg), and
-[IsDialogMessageA](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isdialogmessagea).
+F2 toggles a settings panel drawn into the game frame. The existing game HWND
+receives a subclass that queues keyboard commands. The present thread owns the
+menu state and applies changes after native capture ends. No window is created
+and no focus/activation or display-mode API is called. Enter applies; S saves
+and closes, writing only ScalePercent, Enabled, SharpFilter and KeepOnScreen.
+
+DirectDraw surface GetDC/ReleaseDC bracket GDI drawing after the native frame
+has been composed and before presentation. The DC state and selected objects
+are restored; temporary GDI objects and COM references are released. API or
+drawing failure closes the menu so an invisible panel cannot retain input.
+The DLL keeps dynamic API resolution and empty import directories. Host tests
+exercise the 32-bit stdcall ABI and resource cleanup; they do not establish
+actual Wine appearance or display-driver support.
 
 F8 adds live UISettings and each input owner's fit percentage, correction offset
 and displayed rectangle. The bounds auditor checks the newest run/sample and
@@ -118,6 +121,16 @@ E78D8C's +1C object; the character-info popup must match its selected source
 root's +19C8 field. Missing, changed or native-size sources retain the native
 origin. The inactive character-info position (-400,-400) remains hidden.
 
+The translucent background is a separate manager submission. UITransBalloonText's
+virtual +18 method (4E42A0) returns its background rectangle and true. The manager
+then calls cdecl 492660 at 60B9E8 before drawing the text bitmap at 60BAA3/60BAD4.
+Previously that background reached the geometry fallback with no owner. A narrow
+call wrapper now carries the manager's EDI owner into the same whole-window
+bitmap preparation used by the cached text. The existing rectangle queue records
+its transform, and the enclosing scope is restored. This applies to every admitted
+window using that background path, without a buff-name or size heuristic.
+The cdecl bridge retains the caller's five original arguments and its cleanup.
+
 UITransBalloonText also carries actor speech at 719D11..9E14. Those other
 instances receive a live bottom-center attachment and no source-window
 translation or screen fitting. Hovering an unrelated control therefore cannot
@@ -129,8 +142,7 @@ object stores it at +2C8 and registers it through 5F4DD0. Per-frame placement
 at 742788..280B reads the actor projection +AC/+B0, centers the 60-pixel bar
 at projection X and applies a signed vertical offset. The final bitmap now
 scales around its current integer center, without screen fitting or input
-ownership. No actor projection or name-placement code is patched. The name
-overlap report will be checked alongside the corrected moving bar in-game.
+ownership. No actor projection or name-placement code is patched. The user confirmed both the health bar and name placement in-game.
 
 ## Compact minimap
 

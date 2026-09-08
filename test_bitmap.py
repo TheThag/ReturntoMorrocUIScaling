@@ -147,6 +147,10 @@ static int surface_is_screenish(void* self) { return self!=0; }
 static void ui_present_boundary(const char* kind) {
     CHECK(!strcmp(kind,"BltFast")); ++present_notifications;
 }
+/* The COM target selection and draw order are exercised by test_present.py. */
+static void ui_settings_present_source(void* self,void* src,const RECT* rect) {
+    (void)self; (void)src; (void)rect;
+}
 """
 
 tests = r"""

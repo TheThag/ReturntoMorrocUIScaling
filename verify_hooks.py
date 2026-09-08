@@ -20,6 +20,7 @@ HOOKS = (
     ("Cursor draw", "PRM_CURSOR_DRAW", 0x00227B7B, 0x00227BC0),
     ("Sprite submit", "PRM_SPRITE_SUBMIT", 0x00227FD9, 0x000A0550),
     ("Bitmap submit", "PRM_BITMAP_QUEUE", 0x000AB5A1, 0x000A0550),
+    ("Window translucent background", "PRM_BACKGROUND_DRAW", 0x0020B9E8, 0x00092660),
     ("Window overlay draw", "PRM_OVERLAY_DRAW", 0x0020BAF0, 0x0071C8C0),
     ("Window overlay submit", "PRM_OVERLAY_QUEUE", 0x0071C8DD, 0x000A0550),
     ("Special window draw", "PRM_SPECIAL_DRAW", 0x0020BA73, 0x0017B6B0),
@@ -90,6 +91,11 @@ CONNECTED_LAYOUT = (
 # Exact popup constructors and registration, including the classes that have
 # no Wnd/Window suffix. These are evidence spans, not additional hooks.
 POPUP_LAYOUT = (
+    # UITransBalloonText +18 returns a separate background rectangle; the
+    # manager pushes x/y/width/height/color before the scoped cdecl call.
+    (0x000E42A3, bytes.fromhex("0f 10 81 a0 00 00 00 8b 55 08 0f 11 02")),
+    (0x000E42C6, bytes.fromhex("b0 01 5d c2 04 00")),
+    (0x0020B9D9, bytes.fromhex("ff 75 f4 ff 75 ec ff 75 e8 ff 75 e4 ff 75 e0")),
     (0x000DCD25, bytes.fromhex("c7 06 f0 1c d3 00")),
     (0x00228500, bytes.fromhex("e8 7b c8 fc ff")),
     (0x0019F974, bytes.fromhex("c7 06 8c cd d3 00")),

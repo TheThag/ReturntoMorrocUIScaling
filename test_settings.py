@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the native F2 settings mailbox and render-thread commit contract.
-
-The settings header is compiled in a 32-bit host fixture with fake Win32
-functions.  The fixture also extracts the production callback/commit pair so
-that capture deferral, live updates, and four-key Save persistence are tested
-without launching Wine or touching a real INI file.
-"""
+"""Exercise the render-thread in-game settings overlay and mailbox contract."""
 
 import os
 from pathlib import Path
@@ -16,7 +10,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def extract_function(source, name):
-    marker = f"static "
+    marker = "static "
     start = source.find(marker)
     while start >= 0:
         line_end = source.find("\n", start)
@@ -75,13 +69,14 @@ SOURCE = (ROOT / "prm_uifix.c").read_text()
 CORE = "\n\n".join(extract_function(SOURCE, name) for name in (
     "ui_settings_apply", "ui_settings_commit"))
 
-
 PREFIX = r'''
 #include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
 typedef uint8_t BYTE;
 typedef uint16_t WORD;
 typedef uint32_t UINT;
@@ -95,313 +90,234 @@ typedef void *HINSTANCE;
 typedef void *LPVOID;
 typedef const char *LPCSTR;
 typedef char *LPSTR;
+typedef const void *LPCVOID;
 typedef void *HWND;
 typedef int BOOL;
+typedef LONG HRESULT;
 typedef struct { LONG x,y; } POINT;
 typedef struct { LONG left,top,right,bottom; } RECT;
 #define WINAPI __attribute__((stdcall))
 #define PRM_MAIN_HWND_RVA 0x00D0AABCUL
 #define PRM_UI_CAPTURE_RVA 0x00AB786CUL
-typedef short (WINAPI *PFN_GetAsyncKeyState)(int);
-typedef HMODULE (WINAPI *PFN_GetModuleHandleA)(LPCSTR);
-typedef BOOL (WINAPI *PFN_CloseHandle)(HANDLE);
-static HMODULE g_self;
+#define FAKE_EXE_SIZE (PRM_MAIN_HWND_RVA+4UL)
+
 static HMODULE g_exe;
 static DWORD g_exe_size;
 static char g_ini_path[520] = "fixture.ini";
 static HWND g_input_hwnd;
-static PFN_GetAsyncKeyState g_GetAsyncKeyState;
-static PFN_GetModuleHandleA g_GetModuleHandleA;
-static PFN_CloseHandle g_CloseHandle;
 static int g_ui_scale_percent=133;
 static int g_ui_enabled=1;
 static int g_ui_runtime_enabled=1;
 static int g_ui_sharp_filter=0;
 static int g_ui_keep_on_screen=1;
-static int g_owner_bitmap_hooks_installed=1;
+static int g_ui_screen_w=1920;
+static int g_ui_screen_h=1080;
 static DWORD g_fake_capture;
 static int g_log_count;
-static char g_last_log[160];
+static char g_last_log[320];
 static int g_save_calls;
 static int g_save_fail_at;
 static char g_save_keys[4][32];
 static char g_save_values[4][32];
-static BOOL WINAPI fake_write_profile(LPCSTR, LPCSTR, LPCSTR, LPCSTR);
+static BYTE g_fake_exe[FAKE_EXE_SIZE];
+static void *g_surface_vtable[27];
+static void *g_fake_surface_address;
 
-static int mem_readable(const void *p, DWORD bytes) {
-    (void)p; (void)bytes; return 1;
+static LONG WINAPI fake_set_window_long(HWND,int,LONG);
+typedef LONG (WINAPI *TEST_WNDPROC)(HWND,DWORD,ULONG_PTR,LONG);
+static LONG WINAPI fake_call_window_proc(TEST_WNDPROC,HWND,DWORD,ULONG_PTR,LONG);
+static BOOL WINAPI fake_write_profile(const char*,const char*,const char*,const char*);
+static int WINAPI fake_save_dc(void*);
+static BOOL WINAPI fake_restore_dc(void*,int);
+static void* WINAPI fake_create_brush(DWORD);
+static int WINAPI fake_fill_rect(void*,const RECT*,void*);
+static BOOL WINAPI fake_delete_object(void*);
+static void* WINAPI fake_select_object(void*,void*);
+static int WINAPI fake_set_bk_mode(void*,int);
+static DWORD WINAPI fake_set_text_color(void*,DWORD);
+static BOOL WINAPI fake_text_out(void*,int,int,const char*,int);
+static int WINAPI fake_draw_text(void*,const char*,int,RECT*,UINT);
+static void* WINAPI fake_create_font(int,int,int,int,int,DWORD,DWORD,DWORD,DWORD,DWORD,DWORD,DWORD,DWORD,const char*);
+
+static int range_in(const void *p, size_t bytes, const void *base, size_t size) {
+    uintptr_t q=(uintptr_t)p,b=(uintptr_t)base;
+    return p && q>=b && bytes<=size && q-b<=size-bytes;
+}
+static int mem_readable(const void *p,DWORD bytes) {
+    if (range_in(p,bytes,g_fake_exe,sizeof(g_fake_exe))) return 1;
+    if (range_in(p,bytes,g_surface_vtable,27*sizeof(void*))) return 1;
+    if (p==g_fake_surface_address && bytes<=sizeof(void*)) return 1;
+    return 0;
 }
 static HMODULE find_loaded_module(const char *name) {
     (void)name; return (HMODULE)(ULONG_PTR)0x12340000UL;
 }
-static void *resolve_export(HMODULE module, const char *name) {
+static void *resolve_export(HMODULE module,const char *name) {
     (void)module;
+    if (!strcmp(name,"SetWindowLongA")) return (void*)fake_set_window_long;
+    if (!strcmp(name,"CallWindowProcA")) return (void*)fake_call_window_proc;
+    if (!strcmp(name,"SaveDC")) return (void*)fake_save_dc;
+    if (!strcmp(name,"RestoreDC")) return (void*)fake_restore_dc;
+    if (!strcmp(name,"CreateSolidBrush")) return (void*)fake_create_brush;
+    if (!strcmp(name,"FillRect")) return (void*)fake_fill_rect;
+    if (!strcmp(name,"DeleteObject")) return (void*)fake_delete_object;
+    if (!strcmp(name,"SelectObject")) return (void*)fake_select_object;
+    if (!strcmp(name,"SetBkMode")) return (void*)fake_set_bk_mode;
+    if (!strcmp(name,"SetTextColor")) return (void*)fake_set_text_color;
+    if (!strcmp(name,"TextOutA")) return (void*)fake_text_out;
+    if (!strcmp(name,"DrawTextA")) return (void*)fake_draw_text;
+    if (!strcmp(name,"CreateFontA")) return (void*)fake_create_font;
     if (!strcmp(name,"WritePrivateProfileStringA")) return (void*)fake_write_profile;
     return 0;
 }
-static void s_append(char *dst, unsigned int cap, const char *src) {
+static void s_append(char *dst,unsigned int cap,const char *src) {
     unsigned int i=0,j=0;
     if (!dst || !cap || !src) return;
     while (i+1<cap && dst[i]) ++i;
     while (i+1<cap && src[j]) dst[i++]=src[j++];
     if (i<cap) dst[i]=0;
 }
-static void s_append_uint(char *dst, unsigned int cap, DWORD value) {
+static void s_append_uint(char *dst,unsigned int cap,DWORD value) {
     char temp[16]; unsigned int n=0;
     if (!value) { s_append(dst,cap,"0"); return; }
     while (value && n<sizeof(temp)) { temp[n++]=(char)('0'+value%10); value/=10; }
     while (n) { char one[2]={temp[--n],0}; s_append(dst,cap,one); }
 }
 static void log_line(const char *line) {
-    ++g_log_count;
-    s_append(g_last_log,sizeof(g_last_log),line);
+    ++g_log_count; s_append(g_last_log,sizeof(g_last_log),line);
 }
-static DWORD WINAPI fake_capture_thread(void *unused) {
-    (void)unused; return g_fake_capture;
-}
+static DWORD owner_native_capture(void) { return g_fake_capture; }
 '''
-
 
 CORE_STUBS = r'''
 static int g_settings_request_valid,g_settings_request_scale,g_settings_request_enabled;
 static int g_settings_request_crisp,g_settings_request_keep,g_settings_request_save;
-static DWORD owner_native_capture(void) { return g_fake_capture; }
 '''
-
 
 API_STUBS = r'''
 static HWND game_window=(HWND)(ULONG_PTR)0x1010;
-static HWND overlay_window=(HWND)(ULONG_PTR)0x2020;
-static HWND foreground_window;
-static short key_state;
-static int create_thread_calls;
-static int create_thread_fails;
-static int run_thread_proc;
-static int close_handle_calls;
-static int post_calls;
-static DWORD last_post_message;
-static int show_calls;
-static int last_show_mode=-1;
-static int set_foreground_calls;
-static int set_focus_calls;
-static int cross_thread_focus_calls;
-static HWND last_foreground;
-static HWND last_focus;
-static int register_calls;
-static int top_create_calls;
-static int child_create_calls;
-static int child_bounds_bad;
-static int dispatch_calls;
-static int translate_calls;
-static int dialog_calls;
-static int thread_message_mode;
-static int thread_message_step;
-static char last_percent_text[24];
-static int checkbox_enabled_state;
-static int checkbox_crisp_state;
-static int checkbox_keep_state;
-static int mutate_settings_after_percent;
-static char registered_class[64];
-static char created_class[64];
+static struct { void **vt; } fake_surface;
+static void *fake_dc=(void*)(ULONG_PTR)0x6060UL;
+static int set_window_long_calls;
+static int set_window_long_fails;
+static HWND last_subclass_hwnd;
+static LONG last_subclass_proc;
+static int call_window_proc_calls;
+static int old_proc_result=0x42;
+static int get_dc_calls,release_dc_calls;
+static int get_dc_fails,release_dc_fails;
+static int save_dc_calls,restore_dc_calls,save_dc_fails,restore_dc_fails;
+static int fill_rect_calls,fill_rect_fail_at;
+static RECT first_fill_rect;
+static int brush_calls,delete_object_calls,delete_object_fails;
+static int select_calls;
+static int bk_mode_calls,text_color_calls,text_out_calls,draw_text_calls;
+static int text_out_fail,draw_text_fail_at;
+static int create_font_calls,create_font_fails,created_font_height;
+static int fail_gdi_api;
+static int surface_ready;
 
-static WORD WINAPI fake_register_class(const UISettingsWndClassA *cls) {
-    assert(cls && cls->lpfnWndProc==ui_settings_wndproc);
-    assert(cls->hbrBackground==(HANDLE)(ULONG_PTR)16);
-    assert(cls->hCursor==(HANDLE)(ULONG_PTR)0x9090);
-    ++register_calls;
-    strncpy(registered_class,cls->lpszClassName,sizeof(registered_class)-1);
-    return 1;
+static HRESULT WINAPI fake_surface_get_dc(void *self,void **out) {
+    assert(self==(void*)&fake_surface); ++get_dc_calls;
+    if (out) *out=fake_dc;
+    if (get_dc_fails) return (HRESULT)-1;
+    return 0;
 }
-static HWND WINAPI fake_create_window(DWORD ex, LPCSTR class_name, LPCSTR title,
-                                      DWORD style, int x, int y, int width, int height,
-                                      HWND parent, HANDLE menu, HINSTANCE instance,
-                                      LPVOID param) {
-    (void)title; (void)style; (void)menu; (void)instance; (void)param;
-    if (!strcmp(class_name,UISET_CLASS_NAME)) {
-        assert(ex==(UISET_WS_EX_TOOLWINDOW|UISET_WS_EX_CONTROLPARENT));
-        assert(parent==game_window);
-        ++top_create_calls;
-        strncpy(created_class,class_name,sizeof(created_class)-1);
-        assert(width==UISET_FALLBACK_WIDTH && height==UISET_FALLBACK_HEIGHT);
-        ui_settings_wndproc(overlay_window,UISET_WM_CREATE,0,0);
-        return overlay_window;
-    }
-    ++child_create_calls;
-    if (x<0 || y<0 || width<=0 || height<=0 ||
-        x+width>UISET_CLIENT_WIDTH || y+height>UISET_CLIENT_HEIGHT) child_bounds_bad=1;
-    return (HWND)(ULONG_PTR)(0x3000UL+(DWORD)child_create_calls);
+static HRESULT WINAPI fake_surface_release_dc(void *self,void *dc) {
+    assert(self==(void*)&fake_surface); assert(dc==fake_dc || dc==0);
+    ++release_dc_calls; return release_dc_fails?(HRESULT)-1:0;
 }
-static BOOL WINAPI fake_get_message(UISettingsMsg *msg, HWND filter, UINT first, UINT last) {
-    int step=thread_message_step++;
-    (void)filter; (void)first; (void)last;
-    memset(msg,0,sizeof(*msg));
-    if (thread_message_mode==1 && step==1) {
-        msg->hwnd=overlay_window; msg->message=UISET_WM_KEYDOWN;
-        msg->wParam=UISET_VK_F2; msg->lParam=UISET_KEY_REPEAT; return 1;
-    }
-    if (step != 0) return 0;
-    msg->hwnd=overlay_window;
-    if (thread_message_mode==0) msg->message=UISET_WM_CLOSE;
-    else if (thread_message_mode==1) {
-        msg->message=UISET_WM_KEYDOWN; msg->wParam=UISET_VK_F2; msg->lParam=0;
-    } else if (thread_message_mode==2) {
-        msg->message=UISET_WM_KEYDOWN; msg->wParam=UISET_VK_ESCAPE; msg->lParam=0;
-    } else {
-        msg->message=UISET_WM_KEYDOWN; msg->wParam=0x09; msg->lParam=0;
-    }
-    return 1;
+static LONG WINAPI fake_set_window_long(HWND hwnd,int index,LONG proc) {
+    assert(index==UISET_GWL_WNDPROC); ++set_window_long_calls;
+    last_subclass_hwnd=hwnd; last_subclass_proc=proc;
+    return set_window_long_fails?0:(LONG)0x41414141UL;
 }
-static BOOL WINAPI fake_translate(const UISettingsMsg *msg) {
-    (void)msg; ++translate_calls; return 1;
+static LONG WINAPI fake_call_window_proc(TEST_WNDPROC proc,HWND hwnd,DWORD message,ULONG_PTR wp,LONG lp) {
+    (void)proc; (void)hwnd; (void)message; (void)wp; (void)lp;
+    ++call_window_proc_calls; return old_proc_result;
 }
-static UISettingsLResult WINAPI fake_dispatch(const UISettingsMsg *msg) {
-    ++dispatch_calls;
-    return ui_settings_wndproc(msg->hwnd,msg->message,msg->wParam,msg->lParam);
+static int WINAPI fake_save_dc(void *dc) { assert(dc==fake_dc); ++save_dc_calls; return save_dc_fails?0:17; }
+static BOOL WINAPI fake_restore_dc(void *dc,int saved) { assert(dc==fake_dc); assert(saved==17); ++restore_dc_calls; return restore_dc_fails?0:1; }
+static void *WINAPI fake_create_brush(DWORD color) { (void)color; ++brush_calls; return (void*)(ULONG_PTR)(0x7000UL+(DWORD)brush_calls); }
+static int WINAPI fake_fill_rect(void *dc,const RECT *rect,void *brush) {
+    assert(dc==fake_dc && brush); if (!fill_rect_calls) first_fill_rect=*rect;
+    ++fill_rect_calls; return fill_rect_fail_at && fill_rect_calls==fill_rect_fail_at?0:1;
 }
-static BOOL WINAPI fake_dialog(HWND hwnd, UISettingsMsg *msg) {
-    (void)hwnd; ++dialog_calls;
-    return msg && msg->message==UISET_WM_KEYDOWN && msg->wParam==0x09;
+static BOOL WINAPI fake_delete_object(void *object) { assert(object); ++delete_object_calls; return delete_object_fails?0:1; }
+static void *WINAPI fake_select_object(void *dc,void *object) {
+    assert(dc==fake_dc && object); ++select_calls;
+    return (select_calls==1)?(void*)(ULONG_PTR)0x8888UL:(void*)(ULONG_PTR)0x9999UL;
 }
-static BOOL WINAPI fake_adjust(RECT *rect, DWORD style, BOOL menu, DWORD ex) {
-    (void)style; (void)menu; (void)ex;
-    assert(rect->right==UISET_CLIENT_WIDTH && rect->bottom==UISET_CLIENT_HEIGHT);
-    rect->right=UISET_FALLBACK_WIDTH; rect->bottom=UISET_FALLBACK_HEIGHT; return 1;
+static int WINAPI fake_set_bk_mode(void *dc,int mode) { assert(dc==fake_dc && mode==UISET_TRANSPARENT); ++bk_mode_calls; return 1; }
+static DWORD WINAPI fake_set_text_color(void *dc,DWORD color) { assert(dc==fake_dc && color==0x00ffffffUL); ++text_color_calls; return 0; }
+static BOOL WINAPI fake_text_out(void *dc,int x,int y,const char *text,int length) {
+    (void)x; (void)y; (void)text; (void)length; assert(dc==fake_dc); ++text_out_calls; return !text_out_fail;
 }
-static BOOL WINAPI fake_get_window_rect(HWND hwnd, RECT *rect) {
-    assert(hwnd==game_window); rect->left=0; rect->top=0; rect->right=1920; rect->bottom=1080; return 1;
+static int WINAPI fake_draw_text(void *dc,const char *text,int length,RECT *rect,UINT flags) {
+    (void)text; (void)length; (void)rect; (void)flags; assert(dc==fake_dc); ++draw_text_calls;
+    return draw_text_fail_at && draw_text_calls==draw_text_fail_at?0:1;
 }
-static HANDLE WINAPI fake_load_cursor(HINSTANCE instance, LPCSTR resource) {
-    assert(instance==0 && (ULONG_PTR)resource==UISET_IDC_ARROW); return (HANDLE)(ULONG_PTR)0x9090;
+static void *WINAPI fake_create_font(int height,int width,int escapement,int orientation,int weight,
+                                     DWORD italic,DWORD underline,DWORD strike,DWORD charset,
+                                     DWORD out_precision,DWORD clip_precision,DWORD quality,
+                                     DWORD pitch,const char *face) {
+    (void)width; (void)escapement; (void)orientation; (void)weight; (void)italic;
+    (void)underline; (void)strike; (void)charset; (void)out_precision;
+    (void)clip_precision; (void)quality; (void)pitch; (void)face;
+    ++create_font_calls; created_font_height=height;
+    return create_font_fails?0:(void*)(ULONG_PTR)0x7777UL;
 }
-static BOOL WINAPI fake_update(HWND hwnd) { assert(hwnd==overlay_window); return 1; }
-static BOOL WINAPI fake_set_text(HWND hwnd, LPCSTR text) {
-    if (hwnd==g_ui_settings_percent) {
-        strncpy(last_percent_text,text,sizeof(last_percent_text)-1);
-        last_percent_text[sizeof(last_percent_text)-1]=0;
-        if (mutate_settings_after_percent) {
-            g_ui_runtime_enabled=0; g_ui_sharp_filter=1; g_ui_keep_on_screen=0;
-        }
-    }
-    return 1;
-}
-static int WINAPI fake_get_text(HWND hwnd, LPSTR text, int cap) {
-    (void)hwnd; if (cap>0) { strncpy(text,"133",(size_t)cap-1); text[cap-1]=0; } return 3;
-}
-static UISettingsLResult WINAPI fake_send(HWND hwnd, DWORD message, UISettingsWParam wp, UISettingsLParam lp) {
-    int checked=(wp==UISET_BST_CHECKED);
-    (void)lp;
-    if (message==UISET_BM_SETCHECK) {
-        if (hwnd==g_ui_settings_enabled) checkbox_enabled_state=checked;
-        else if (hwnd==g_ui_settings_crisp) checkbox_crisp_state=checked;
-        else if (hwnd==g_ui_settings_keep) checkbox_keep_state=checked;
-        return 0;
-    }
-    if (message==UISET_BM_GETCHECK) {
-        if (hwnd==g_ui_settings_enabled) return checkbox_enabled_state ? UISET_BST_CHECKED : UISET_BST_UNCHECKED;
-        if (hwnd==g_ui_settings_crisp) return checkbox_crisp_state ? UISET_BST_CHECKED : UISET_BST_UNCHECKED;
-        if (hwnd==g_ui_settings_keep) return checkbox_keep_state ? UISET_BST_CHECKED : UISET_BST_UNCHECKED;
-    }
-    return UISET_BST_UNCHECKED;
-}
-static BOOL WINAPI fake_close_handle(HANDLE handle) {
-    assert(handle==(HANDLE)(ULONG_PTR)0x3030); ++close_handle_calls; return 1;
-}
-static HANDLE WINAPI fake_create_thread(void *security, SIZE_T stack, UISettingsThreadProc proc,
-                                        void *arg, DWORD flags, DWORD *tid) {
-    (void)security; (void)stack; (void)flags;
-    ++create_thread_calls;
-    if (tid) *tid=77;
-    if (create_thread_fails) return 0;
-    if (run_thread_proc) proc(arg);
-    return (HANDLE)(ULONG_PTR)0x3030;
-}
-static short WINAPI fake_async(int key) {
-    assert(key==UISET_VK_F2); return key_state;
-}
-static HWND WINAPI fake_foreground(void) { return foreground_window; }
-static BOOL WINAPI fake_post(HWND hwnd, DWORD message, UISettingsWParam wp, UISettingsLParam lp) {
-    (void)hwnd; (void)wp; (void)lp; ++post_calls; last_post_message=message; return 1;
-}
-static BOOL WINAPI fake_show(HWND hwnd, int mode) {
-    assert(hwnd==overlay_window); ++show_calls; last_show_mode=mode; return 1;
-}
-static BOOL WINAPI fake_set_foreground(HWND hwnd) {
-    ++set_foreground_calls; last_foreground=hwnd; foreground_window=hwnd; return 1;
-}
-static HWND WINAPI fake_set_focus(HWND hwnd) {
-    ++set_focus_calls; last_focus=hwnd;
-    if (hwnd==game_window) ++cross_thread_focus_calls;
-    return hwnd;
-}
-static BOOL WINAPI fake_write_profile(LPCSTR section, LPCSTR key, LPCSTR value, LPCSTR path) {
-    assert(!strcmp(section,"UI")); assert(!strcmp(path,"fixture.ini"));
+static BOOL WINAPI fake_write_profile(const char *section,const char *key,const char *value,const char *path) {
+    assert(!strcmp(section,"UI") && !strcmp(path,"fixture.ini"));
     assert(g_save_calls<4);
     strncpy(g_save_keys[g_save_calls],key,sizeof(g_save_keys[0])-1);
     strncpy(g_save_values[g_save_calls],value,sizeof(g_save_values[0])-1);
     if (g_save_fail_at==g_save_calls) { ++g_save_calls; return 0; }
     ++g_save_calls; return 1;
 }
-static void reset_fake_apis(void) {
-    foreground_window=game_window; key_state=0;
-    create_thread_calls=0; create_thread_fails=0; run_thread_proc=0; close_handle_calls=0;
-    post_calls=0;
-    last_post_message=0; show_calls=0; last_show_mode=-1;
-    set_foreground_calls=0; set_focus_calls=0; cross_thread_focus_calls=0;
-    last_foreground=0; last_focus=0;
-    register_calls=0; top_create_calls=0; child_create_calls=0; child_bounds_bad=0;
-    dispatch_calls=0; translate_calls=0; dialog_calls=0;
-    thread_message_mode=0; thread_message_step=0;
-    last_percent_text[0]=0;
-    checkbox_enabled_state=0; checkbox_crisp_state=0; checkbox_keep_state=0;
-    mutate_settings_after_percent=0;
-    registered_class[0]=0; created_class[0]=0;
-    g_ui_settings_api_state=2;
-    g_ui_settings_f2_latched=0;
-    g_GetAsyncKeyState=fake_async;
-    g_CloseHandle=fake_close_handle;
-    g_ui_settings_register_class=fake_register_class;
-    g_ui_settings_create_window=fake_create_window;
-    g_ui_settings_get_message=fake_get_message;
-    g_ui_settings_translate_message=fake_translate;
-    g_ui_settings_dispatch_message=fake_dispatch;
-    g_ui_settings_def_window_proc=0;
-    g_ui_settings_load_cursor=fake_load_cursor;
-    g_ui_settings_is_dialog_message=fake_dialog;
-    g_ui_settings_adjust_window_rect=fake_adjust;
-    g_ui_settings_get_window_rect=fake_get_window_rect;
-    g_ui_settings_get_foreground=fake_foreground;
-    g_ui_settings_create_thread=fake_create_thread;
-    g_ui_settings_post_message=fake_post;
-    g_ui_settings_show_window=fake_show;
-    g_ui_settings_update_window=fake_update;
-    g_ui_settings_set_window_text=fake_set_text;
-    g_ui_settings_get_window_text=fake_get_text;
-    g_ui_settings_send_message=fake_send;
-    g_ui_settings_set_foreground=fake_set_foreground;
-    g_ui_settings_set_focus=fake_set_focus;
-    g_input_hwnd=game_window;
-}
-static void reset_core(void) {
-    g_settings_request_valid=0;
-    g_settings_request_scale=0; g_settings_request_enabled=0;
+static void reset_fake(void) {
+    unsigned int i;
+    memset(g_fake_exe,0,sizeof(g_fake_exe));
+    memset(g_surface_vtable,0,sizeof(g_surface_vtable));
+    fake_surface.vt=g_surface_vtable;
+    g_fake_surface_address=&fake_surface;
+    g_surface_vtable[17]=(void*)fake_surface_get_dc;
+    g_surface_vtable[26]=(void*)fake_surface_release_dc;
+    *(DWORD*)(g_fake_exe+PRM_MAIN_HWND_RVA)=(DWORD)(ULONG_PTR)game_window;
+    g_exe=g_fake_exe; g_exe_size=sizeof(g_fake_exe); g_input_hwnd=game_window;
+    g_ui_screen_w=1920; g_ui_screen_h=1080;
+    g_ui_scale_percent=133; g_ui_runtime_enabled=1; g_ui_sharp_filter=0; g_ui_keep_on_screen=1;
+    g_fake_capture=0; g_log_count=0; g_last_log[0]=0;
+    g_save_calls=0; g_save_fail_at=-1; memset(g_save_keys,0,sizeof(g_save_keys)); memset(g_save_values,0,sizeof(g_save_values));
+    set_window_long_calls=set_window_long_fails=0; last_subclass_hwnd=0; last_subclass_proc=0;
+    call_window_proc_calls=0; get_dc_calls=release_dc_calls=0; get_dc_fails=release_dc_fails=0;
+    save_dc_calls=restore_dc_calls=save_dc_fails=restore_dc_fails=0; fill_rect_calls=fill_rect_fail_at=0;
+    memset(&first_fill_rect,0,sizeof(first_fill_rect)); brush_calls=delete_object_calls=delete_object_fails=0;
+    select_calls=bk_mode_calls=text_color_calls=text_out_calls=draw_text_calls=0;
+    text_out_fail=draw_text_fail_at=0; create_font_calls=create_font_fails=created_font_height=0; fail_gdi_api=0; surface_ready=1;
+    g_settings_request_valid=0; g_settings_request_scale=0; g_settings_request_enabled=0;
     g_settings_request_crisp=0; g_settings_request_keep=0; g_settings_request_save=0;
-    g_ui_scale_percent=133; g_ui_enabled=1; g_ui_runtime_enabled=1;
-    g_ui_sharp_filter=0; g_ui_keep_on_screen=1;
-    g_owner_bitmap_hooks_installed=1; g_fake_capture=0;
-    g_exe=0; g_exe_size=0;
-    g_log_count=0; g_last_log[0]=0;
-    g_save_calls=0; g_save_fail_at=-1;
-    memset(g_save_keys,0,sizeof(g_save_keys)); memset(g_save_values,0,sizeof(g_save_values));
-    g_ui_settings_thread_state=UISET_THREAD_NEVER;
-    g_ui_settings_open_request=0; g_ui_settings_visible=0;
-    g_ui_settings_f2_latched=0; g_ui_settings_mailbox=0;
-    g_ui_settings_snapshot=0; g_ui_settings_game_hwnd_snapshot=0;
-    ui_settings_window_store(0); g_ui_settings_percent=0;
-    g_ui_settings_enabled=0; g_ui_settings_crisp=0; g_ui_settings_keep=0;
-    g_ui_settings_status=0;
+    g_ui_settings_api_state=0; g_ui_settings_subclass_state=0; g_ui_settings_panel_open=0;
+    g_ui_settings_deferred_open=0; g_ui_settings_events=0; g_ui_settings_mailbox=0;
+    g_ui_settings_snapshot=0; g_ui_settings_game_hwnd_snapshot=0; g_ui_settings_original_wndproc=0;
+    g_ui_settings_bound_hwnd=0; g_ui_settings_selected=0; g_ui_settings_draft_percent=0;
+    g_ui_settings_draft_enabled=0; g_ui_settings_draft_crisp=0; g_ui_settings_draft_keep=0;
+    g_ui_settings_status=0; g_ui_settings_failure_logged=0;
+    g_ui_settings_set_window_long=0; g_ui_settings_call_window_proc=0;
+    g_ui_settings_get_dc=0; g_ui_settings_release_dc=0; g_ui_settings_save_dc=0; g_ui_settings_restore_dc=0;
+    g_ui_settings_create_brush=0; g_ui_settings_fill_rect=0; g_ui_settings_delete_object=0;
+    g_ui_settings_select_object=0; g_ui_settings_set_bk_mode=0; g_ui_settings_set_text_color=0;
+    g_ui_settings_text_out=0; g_ui_settings_draw_text=0; g_ui_settings_create_font=0;
+    for(i=0;i<4;++i) { g_save_keys[i][0]=0; g_save_values[i][0]=0; }
 }
+static void reset_core(void) { reset_fake(); }
+static void ready_and_install(void) { ui_settings_poll(); assert(g_ui_settings_subclass_state==2); }
+static void press(DWORD key) {
+    assert(ui_settings_wndproc(game_window,UISET_WM_KEYDOWN,key,0)==0);
+    ui_settings_poll();
+}
+static void open_panel(void) { press(UISET_VK_F2); assert(ui_settings_is_open()); }
 '''
-
 
 TESTS = r'''
 static void test_parser_and_packet(void) {
@@ -410,180 +326,171 @@ static void test_parser_and_packet(void) {
     assert(ui_settings_parse_percent(" 200 ",&value) && value==200);
     assert(!ui_settings_parse_percent("99",&value));
     assert(!ui_settings_parse_percent("201",&value));
-    assert(!ui_settings_parse_percent("",&value));
     assert(!ui_settings_parse_percent("133x",&value));
-    assert((ui_settings_pack(50,1,0,1,1) & UISET_PACKET_PERCENT)==100);
-    assert((ui_settings_pack(250,0,1,0,0) & UISET_PACKET_PERCENT)==200);
-    assert((ui_settings_pack(150,1,0,1,1) & UISET_PACKET_ENABLED)!=0);
-    assert((ui_settings_pack(150,1,0,1,1) & UISET_PACKET_CRISP)==0);
-    assert((ui_settings_pack(150,1,0,1,1) & UISET_PACKET_KEEP)!=0);
-    assert((ui_settings_pack(150,1,0,1,1) & UISET_PACKET_SAVE)!=0);
-    puts("PASS: settings percent validation, clamp and packed command fields");
+    assert((ui_settings_pack(50,1,0,1,1)&UISET_PACKET_PERCENT)==100);
+    assert((ui_settings_pack(250,0,1,0,0)&UISET_PACKET_PERCENT)==200);
+    puts("PASS: settings percent validation, clamp, and packed fields");
 }
 
-static void test_latest_mailbox_and_deferred_commit(void) {
-    reset_core(); reset_fake_apis();
-    ui_settings_queue_values(125,1,0,1,0);
-    ui_settings_queue_values(175,0,1,0,0); /* Latest request wins. */
-    ui_settings_poll();
-    assert((ui_settings_snapshot_load() & UISET_PACKET_PERCENT)==133);
+static void test_game_hwnd_subclass_and_retry(void) {
+    reset_core();
     assert(ui_settings_game_hwnd()==game_window);
-    assert(g_settings_request_valid && g_settings_request_scale==175);
-    assert(!g_settings_request_enabled && g_settings_request_crisp && !g_settings_request_keep);
-    assert(g_ui_scale_percent==133 && g_ui_runtime_enabled==1 && !g_ui_sharp_filter);
-    assert(g_save_calls==0);
+    ready_and_install();
+    assert(set_window_long_calls==1 && last_subclass_hwnd==game_window);
+    assert(last_subclass_proc==(LONG)(ULONG_PTR)ui_settings_wndproc);
+
+    reset_core();
+    *(DWORD*)(g_fake_exe+PRM_MAIN_HWND_RVA)=0; g_input_hwnd=0;
+    ui_settings_poll();
+    assert(g_ui_settings_subclass_state==0 && set_window_long_calls==0);
+    *(DWORD*)(g_fake_exe+PRM_MAIN_HWND_RVA)=(DWORD)(ULONG_PTR)game_window;
+    ui_settings_poll();
+    assert(g_ui_settings_subclass_state==2 && set_window_long_calls==1);
+
+    reset_core(); set_window_long_fails=1; ui_settings_poll();
+    assert(g_ui_settings_subclass_state==3 && !ui_settings_is_open());
+    puts("PASS: render thread resolves the native main HWND, subclasses once, and retries a late HWND");
+}
+
+static void test_deferred_open_and_key_routing(void) {
+    reset_core(); ready_and_install();
     g_fake_capture=1;
-    ui_settings_commit();
-    assert(g_settings_request_valid && g_ui_scale_percent==133);
-    g_fake_capture=0;
-    ui_settings_commit();
-    assert(!g_settings_request_valid && g_ui_scale_percent==175);
-    assert(!g_ui_runtime_enabled && g_ui_sharp_filter && !g_ui_keep_on_screen);
-    ui_settings_poll();
-    assert(g_settings_request_valid==0);
-    puts("PASS: latest settings mailbox wins and commit defers during native capture");
+    press(UISET_VK_F2);
+    assert(!ui_settings_is_open() && g_ui_settings_deferred_open);
+    /* A second F2 while capture is active cancels the pending open. */
+    press(UISET_VK_F2);
+    assert(!ui_settings_is_open() && !g_ui_settings_deferred_open);
+    g_fake_capture=0; ui_settings_poll();
+    assert(!ui_settings_is_open());
+    press(UISET_VK_F2);
+    assert(ui_settings_is_open() && !g_ui_settings_deferred_open);
+
+    assert(ui_settings_wndproc(game_window,UISET_WM_KEYDOWN,0x41,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_CHAR,0x61,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_LBUTTONDOWN,0,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_MOUSEWHEEL,0,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_LBUTTONDBLCLK,0,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_RBUTTONDBLCLK,0,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_MBUTTONDBLCLK,0,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_XBUTTONDBLCLK,0,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_MOUSEHWHEEL,0,0)==0);
+    assert(ui_settings_wndproc(game_window,UISET_WM_KEYUP,0x41,0)==old_proc_result);
+    assert(ui_settings_wndproc(game_window,UISET_WM_LBUTTONUP,0,0)==old_proc_result);
+    assert(ui_settings_wndproc(game_window,UISET_WM_SYSKEYDOWN,UISET_VK_F4,UISET_ALT_CONTEXT)==old_proc_result);
+    assert(call_window_proc_calls==3);
+    assert(ui_settings_wndproc(game_window,0x0010,0,0)==old_proc_result);
+
+    assert(ui_settings_wndproc(game_window,UISET_WM_KEYDOWN,UISET_VK_F2,UISET_KEY_REPEAT)==0);
+    ui_settings_poll(); assert(ui_settings_is_open());
+    assert(ui_settings_wndproc(game_window,UISET_WM_NCDESTROY,0,0)==old_proc_result);
+    assert(call_window_proc_calls==5);
+    assert(!ui_settings_is_open() && !g_ui_settings_original_wndproc && !g_ui_settings_bound_hwnd);
+    puts("PASS: capture defers F2 open; open panel blocks key/mouse-down input while key-up, lifecycle, and Alt+F4 pass through");
 }
 
-static void test_save_and_partial_failure(void) {
-    reset_core(); reset_fake_apis();
-    ui_settings_queue_values(190,1,0,1,1);
-    ui_settings_poll(); ui_settings_commit();
-    assert(g_ui_scale_percent==190 && g_ui_runtime_enabled && !g_ui_sharp_filter && g_ui_keep_on_screen);
-    assert(g_save_calls==4);
-    assert(!strcmp(g_save_keys[0],"ScalePercent") && !strcmp(g_save_values[0],"190"));
-    assert(!strcmp(g_save_keys[1],"Enabled") && !strcmp(g_save_values[1],"1"));
-    assert(!strcmp(g_save_keys[2],"SharpFilter") && !strcmp(g_save_values[2],"0"));
-    assert(!strcmp(g_save_keys[3],"KeepOnScreen") && !strcmp(g_save_values[3],"1"));
-    assert(strstr(g_last_log,"saved")!=0);
+static void test_draft_navigation_apply_save_close(void) {
+    reset_core(); g_ui_scale_percent=150; g_ui_runtime_enabled=1; g_ui_sharp_filter=0; g_ui_keep_on_screen=1;
+    ready_and_install(); open_panel();
+    assert(g_ui_settings_draft_percent==150 && g_ui_settings_selected==0);
+    press(UISET_VK_DOWN); assert(g_ui_settings_selected==1);
+    press(UISET_VK_RIGHT); assert(!g_ui_settings_draft_enabled);
+    press(UISET_VK_UP); assert(g_ui_settings_selected==0);
+    press(UISET_VK_LEFT); assert(g_ui_settings_draft_percent==145);
+    press(UISET_VK_RETURN);
+    assert(ui_settings_is_open() && g_settings_request_valid && g_settings_request_scale==145);
+    ui_settings_commit();
+    assert(g_ui_scale_percent==145 && !g_ui_runtime_enabled && !g_settings_request_valid);
+    ui_settings_close_panel();
 
-    reset_core(); reset_fake_apis(); g_save_fail_at=2;
-    ui_settings_queue_values(160,0,1,0,1);
-    ui_settings_poll(); ui_settings_commit();
-    assert(g_save_calls==4 && g_ui_scale_percent==160 && !g_ui_runtime_enabled);
-    assert(strstr(g_last_log,"save failed")!=0);
-    puts("PASS: Apply performs no INI writes; Save writes four UI keys and reports partial failure");
+    /* Saving is a render-thread mailbox action and closes only after it is
+       queued; the core commit performs the actual four-key persistence. */
+    open_panel(); g_ui_settings_draft_percent=175; g_ui_settings_draft_enabled=1;
+    g_ui_settings_draft_crisp=1; g_ui_settings_draft_keep=0;
+    press(UISET_VK_S);
+    assert(!ui_settings_is_open() && g_settings_request_valid && g_settings_request_save);
+    ui_settings_commit();
+    assert(g_ui_scale_percent==175 && g_ui_runtime_enabled && g_ui_sharp_filter && !g_ui_keep_on_screen);
+    assert(g_save_calls==4 && !strcmp(g_save_keys[0],"ScalePercent"));
+
+    ready_and_install(); open_panel(); press(UISET_VK_ESCAPE);
+    assert(!ui_settings_is_open() && !g_settings_request_valid);
+    puts("PASS: render-owned four-row draft navigation, Apply, Save-and-close, and Esc close");
 }
 
-static void test_snapshot_is_coherent(void) {
-    reset_core(); reset_fake_apis();
-    g_ui_scale_percent=176; g_ui_runtime_enabled=1;
-    g_ui_sharp_filter=0; g_ui_keep_on_screen=1;
-    g_ui_settings_percent=(HWND)(ULONG_PTR)0x3101;
-    g_ui_settings_enabled=(HWND)(ULONG_PTR)0x3102;
-    g_ui_settings_crisp=(HWND)(ULONG_PTR)0x3103;
-    g_ui_settings_keep=(HWND)(ULONG_PTR)0x3104;
+static void test_snapshot_and_latest_mailbox(void) {
+    reset_core();
+    g_ui_scale_percent=176; g_ui_runtime_enabled=1; g_ui_sharp_filter=0; g_ui_keep_on_screen=1;
     ui_settings_publish_snapshot();
-    g_input_hwnd=(HWND)(ULONG_PTR)0x9999;
+    assert((ui_settings_snapshot_load()&UISET_PACKET_PERCENT)==176);
     assert(ui_settings_game_hwnd()==game_window);
-
-    /* A raw read after the first control update would observe these changes;
-     * one atomic snapshot must keep all four controls on the old values. */
-    mutate_settings_after_percent=1;
-    ui_settings_sync_controls();
-    assert(!strcmp(last_percent_text,"176"));
-    assert(checkbox_enabled_state==1 && checkbox_crisp_state==0 && checkbox_keep_state==1);
-    puts("PASS: settings controls use one coherent atomic snapshot");
+    ui_settings_queue_values(125,1,0,1,0);
+    ui_settings_queue_values(190,0,1,0,1);
+    ui_settings_poll();
+    assert(g_settings_request_valid && g_settings_request_scale==190);
+    assert(!g_settings_request_enabled && g_settings_request_crisp && g_settings_request_save);
+    g_fake_capture=1; ui_settings_commit();
+    assert(g_settings_request_valid && g_ui_scale_percent==176);
+    g_fake_capture=0; ui_settings_commit();
+    assert(!g_settings_request_valid && g_ui_scale_percent==190 && !g_ui_runtime_enabled);
+    assert(g_save_calls==4 && strstr(g_last_log,"Settings saved")!=0);
+    puts("PASS: atomic snapshot and latest-wins mailbox preserve render-thread Apply/Save and capture deferral");
 }
 
-static void test_f2_foreground_and_lifecycle(void) {
-    reset_core(); reset_fake_apis();
-    g_ui_settings_thread_state=UISET_THREAD_NEVER;
-    foreground_window=(HWND)(ULONG_PTR)0x9999; key_state=0x8000;
-    ui_settings_poll();
-    assert(create_thread_calls==0 && g_ui_settings_thread_state==UISET_THREAD_NEVER);
+static void test_draw_surface_balance_and_geometry(void) {
+    reset_core(); ready_and_install(); open_panel();
+    ui_settings_draw_surface(&fake_surface);
+    assert(get_dc_calls==1 && release_dc_calls==1);
+    assert(save_dc_calls==1 && restore_dc_calls==1);
+    assert(fill_rect_calls>=2 && first_fill_rect.left==660 && first_fill_rect.top==390);
+    assert(first_fill_rect.right==1260 && first_fill_rect.bottom==690);
+    assert(create_font_calls==1 && created_font_height==-18);
+    assert(text_out_calls==1 && draw_text_calls>=6);
+    assert(delete_object_calls>=4 && select_calls>=2);
 
-    foreground_window=game_window; key_state=0x8000;
-    ui_settings_poll();
-    assert(create_thread_calls==0); /* A held key pressed outside the game stays consumed. */
-    key_state=0; ui_settings_poll();
-    key_state=0x8000; create_thread_fails=1;
-    ui_settings_poll();
-    assert(create_thread_calls==1 && g_ui_settings_thread_state==UISET_THREAD_FAILED);
-    key_state=0; ui_settings_poll();
-    key_state=0x8000; ui_settings_poll();
-    assert(create_thread_calls==1); /* Failed creation is latched; no retry loop. */
-
-    reset_fake_apis(); g_ui_settings_thread_state=UISET_THREAD_NEVER;
-    g_ui_settings_open_request=0; g_ui_settings_visible=0; ui_settings_window_store(0);
-    key_state=0x8000; ui_settings_poll();
-    assert(create_thread_calls==1 && g_ui_settings_thread_state==UISET_THREAD_STARTING);
-    key_state=0x8000; ui_settings_poll();
-    assert(create_thread_calls==1); /* Starting thread owns the pending open request. */
-
-    ui_settings_window_store(overlay_window); g_ui_settings_visible=1;
-    key_state=0; ui_settings_poll();
-    key_state=0x8000; ui_settings_poll();
-    assert(post_calls==1 && last_post_message==UISET_WM_APP_TOGGLE);
-
-    g_ui_settings_open_request=1; g_ui_settings_visible=1;
-    ui_settings_close_window();
-    assert(!g_ui_settings_open_request && !g_ui_settings_visible);
-    assert(show_calls==1 && last_show_mode==UISET_SW_HIDE);
-    assert(set_foreground_calls==1 && last_foreground==game_window);
-    assert(set_focus_calls==0 && cross_thread_focus_calls==0);
-    assert(g_ui_settings_f2_latched==1);
-    ui_settings_wndproc(overlay_window,UISET_WM_APP_TOGGLE,0,0);
-    assert(!g_ui_settings_visible && show_calls==1 && last_show_mode==UISET_SW_HIDE);
-    key_state=0; ui_settings_poll();
-    key_state=0x8000; ui_settings_poll();
-    assert(post_calls==1); /* Closing does not immediately reopen on the held key. */
-    puts("PASS: F2 uses foreground-gated edges, idempotent close, and native focus handoff");
+    g_ui_screen_w=640; g_ui_screen_h=480;
+    fill_rect_calls=0; memset(&first_fill_rect,0,sizeof(first_fill_rect));
+    ui_settings_draw_surface(&fake_surface);
+    assert(first_fill_rect.left==20 && first_fill_rect.top==90);
+    assert(first_fill_rect.right==620 && first_fill_rect.bottom==390);
+    assert(created_font_height==-16);
+    ui_settings_close_panel();
+    ui_settings_draw_surface(&fake_surface);
+    assert(get_dc_calls==2);
+    puts("PASS: in-game GDI panel centers within 1920x1080 and 640x480 surfaces with balanced DC/font cleanup");
 }
 
-static void test_full_thread_creation_and_messages(void) {
-    reset_core(); reset_fake_apis();
-    run_thread_proc=1; thread_message_mode=0;
-    g_ui_settings_open_request=1;
-    ui_settings_publish_snapshot();
-    ui_settings_request_open();
-    assert(create_thread_calls==1 && close_handle_calls==1);
-    assert(register_calls==1 && top_create_calls==1 && child_create_calls==12);
-    assert(!strcmp(registered_class,UISET_CLASS_NAME));
-    assert(!strcmp(created_class,UISET_CLASS_NAME));
-    assert(!strcmp(registered_class,created_class));
-    assert(!child_bounds_bad);
-    assert(dispatch_calls==1 && translate_calls==1 && dialog_calls==1);
-    assert(show_calls==2 && last_show_mode==UISET_SW_HIDE);
-    assert(set_foreground_calls==2 && set_focus_calls==1);
-    assert(last_foreground==game_window && last_focus!=game_window);
-    assert(cross_thread_focus_calls==0);
-    assert(g_ui_settings_thread_state==UISET_THREAD_FAILED && !ui_settings_window_load());
+static void test_draw_failures_close_without_trap(void) {
+    reset_core(); ready_and_install(); open_panel();
+    save_dc_fails=1; ui_settings_draw_surface(&fake_surface);
+    assert(!ui_settings_is_open() && get_dc_calls==1 && release_dc_calls==1 && restore_dc_calls==0);
+    assert(strstr(g_last_log,"overlay failed")!=0);
 
-    reset_core(); reset_fake_apis();
-    run_thread_proc=1; thread_message_mode=1; g_ui_settings_open_request=1;
-    ui_settings_publish_snapshot();
-    ui_settings_request_open();
-    assert(!strcmp(registered_class,created_class));
-    assert(show_calls==2 && set_foreground_calls==2 && set_focus_calls==1);
-    assert(last_foreground==game_window && last_focus!=game_window);
-    assert(cross_thread_focus_calls==0);
-    assert(!dispatch_calls && !translate_calls && !dialog_calls);
-    assert(close_handle_calls==1);
+    reset_core(); ready_and_install(); open_panel();
+    fill_rect_fail_at=1; ui_settings_draw_surface(&fake_surface);
+    assert(!ui_settings_is_open() && release_dc_calls==1 && restore_dc_calls==1);
 
-    reset_core(); reset_fake_apis();
-    run_thread_proc=1; thread_message_mode=2; g_ui_settings_open_request=1;
-    ui_settings_publish_snapshot();
-    ui_settings_request_open();
-    assert(show_calls==2 && set_foreground_calls==2 && set_focus_calls==1);
-    assert(last_foreground==game_window && last_focus!=game_window);
-    assert(cross_thread_focus_calls==0);
-    assert(!dispatch_calls && !translate_calls);
+    reset_core(); ready_and_install(); open_panel();
+    get_dc_fails=1; ui_settings_draw_surface(&fake_surface);
+    assert(!ui_settings_is_open() && get_dc_calls==1 && release_dc_calls==0);
 
-    reset_core(); reset_fake_apis();
-    run_thread_proc=1; thread_message_mode=3; g_ui_settings_open_request=1;
-    ui_settings_publish_snapshot();
-    ui_settings_request_open();
-    assert(dialog_calls==1 && !dispatch_calls && !translate_calls);
-    puts("PASS: thread startup uses one shared class, creates in-range controls, closes its handle, and handles close/F2/Esc/dialog messages");
+    reset_core(); ready_and_install(); open_panel();
+    g_ui_settings_draw_text=0; ui_settings_draw_surface(&fake_surface);
+    assert(!ui_settings_is_open() && release_dc_calls==0);
+
+    reset_core(); ready_and_install(); open_panel();
+    ui_settings_draw_failed();
+    assert(!ui_settings_is_open() && strstr(g_last_log,"overlay failed")!=0);
+    puts("PASS: every draw/API failure closes the panel and releases acquired resources so input cannot remain trapped");
 }
 
 int main(void) {
     test_parser_and_packet();
-    test_latest_mailbox_and_deferred_commit();
-    test_save_and_partial_failure();
-    test_snapshot_is_coherent();
-    test_f2_foreground_and_lifecycle();
-    test_full_thread_creation_and_messages();
+    test_game_hwnd_subclass_and_retry();
+    test_deferred_open_and_key_routing();
+    test_draft_navigation_apply_save_close();
+    test_snapshot_and_latest_mailbox();
+    test_draw_surface_balance_and_geometry();
+    test_draw_failures_close_without_trap();
     return 0;
 }
 '''

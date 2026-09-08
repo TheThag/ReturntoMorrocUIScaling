@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the two production bitmap thunks in a freestanding Linux i386 harness.
+"""Execute bitmap/background thunks in a freestanding Linux i386 harness.
 
 Tests stack layout/cleanup, forwarding, EDI/EBP preservation, EBX restoration,
 and continuation jumps. This does not launch PRM or validate Wine rendering.
@@ -12,6 +12,7 @@ root = Path(__file__).resolve().parent
 production = (root / 'vtrace_thunks.S').read_text().split('/* Phase 2V:', 1)[1]
 production = production[production.index('.globl _owner_bitmap_primary_thunk'):]
 production = production.replace('_owner_bitmap_draw_c@32', 'bitmap_draw_stub')
+production = production.replace('_owner_background_draw_c@24', 'background_draw_stub')
 harness = r'''
 .text
 .globl _start
@@ -46,6 +47,23 @@ primary_continue:
 alternate_continue:
     call check_state
     cmpl $2, native_calls
+    jne fail
+    movl $0x31415926, %esi
+    pushl $0xaabbccdd
+    pushl $106
+    pushl $146
+    pushl $171
+    pushl $3246
+    call _owner_background_thunk
+    cmpl $3246, (%esp)
+    jne fail
+    cmpl $0xaabbccdd, 16(%esp)
+    jne fail
+    addl $20, %esp
+    call check_state
+    cmpl $0x31415926, %esi
+    jne fail
+    cmpl $1, background_calls
     jne fail
     movl $1, %eax
     xorl %ebx, %ebx
@@ -89,6 +107,22 @@ bitmap_draw_stub:
     pushl 16(%edx)
     call *12(%edx)
     ret $32
+background_draw_stub:
+    cmpl $window_object, 4(%esp)
+    jne fail
+    cmpl $3246, 8(%esp)
+    jne fail
+    cmpl $171, 12(%esp)
+    jne fail
+    cmpl $146, 16(%esp)
+    jne fail
+    cmpl $106, 20(%esp)
+    jne fail
+    cmpl $0xaabbccdd, 24(%esp)
+    jne fail
+    incl background_calls
+    movl $0x11223344, %eax
+    ret $24
 native_bitmap:
     cmpl $bitmap_object, %ecx
     jne fail
@@ -114,6 +148,7 @@ fail:
 expected_sp: .long 0
 expected_bp: .long 0
 native_calls: .long 0
+background_calls: .long 0
 _g_owner_bitmap_primary_continue: .long 0
 _g_owner_bitmap_alternate_continue: .long 0
 window_object: .long 0
@@ -131,4 +166,4 @@ with tempfile.TemporaryDirectory(prefix='prm-thunks-') as tmp:
     subprocess.run(['clang', '-target', 'i386-linux-gnu', '-c', str(folder / 'thunks.S'), '-o', str(folder / 'thunks.o')], check=True)
     subprocess.run(['ld.lld', '-m', 'elf_i386', '-e', '_start', str(folder / 'thunks.o'), '-o', str(folder / 'thunks')], check=True)
     subprocess.run([str(folder / 'thunks')], check=True)
-print('PASS actual bitmap thunks: i386 forwarding, native ret20, wrapper ret32, stack/register restoration, both continuations')
+print('PASS actual bitmap/background thunks: i386 forwarding, native ret20, wrapper ret32/24, cdecl caller cleanup, stack/register restoration, both continuations')

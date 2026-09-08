@@ -304,3 +304,19 @@ _owner_bitmap_alternate_thunk:
   call _owner_bitmap_draw_c@32
   movl -0x24(%ebp), %ebx
   jmp *_g_owner_bitmap_alternate_continue
+
+/* The manager's background call is cdecl: retain its five stack arguments
+ * for the caller to pop, and pass its EDI window as an extra wrapper argument. */
+.globl _owner_background_thunk
+_owner_background_thunk:
+  pushl %ebp
+  movl %esp, %ebp
+  pushl 24(%ebp)
+  pushl 20(%ebp)
+  pushl 16(%ebp)
+  pushl 12(%ebp)
+  pushl 8(%ebp)
+  pushl %edi
+  call _owner_background_draw_c@24
+  popl %ebp
+  ret
