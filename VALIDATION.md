@@ -1,53 +1,56 @@
-# UI FIX 1.0 validation
+# UI FIX 1.0.1 development validation
 
-The release retains the UI ownership and rendering implementation accepted in
-manual testing through the Alt+V menu-tooltip correction. Version 1.0 adds
-INI-controlled shortcuts, with Shift+P as the only default binding, and moves
-the compiled DLL from source control into the release download.
+GitHub release 1.0 remains available at
+https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.0.
+This development build addresses the two issues reported during its preparation:
+confirmation-dialog buttons and character hover names visible through the map.
+The new changes still require an in-game check.
 
-## Automated verification
+## Confirmation dialogs
 
-All 21 host test harnesses pass. They exercise the production ownership,
-bitmap/background rendering, window bounds, connected windows, tooltip lifetime
-and placement, buff descriptions, map/minimap rendering, drag/capture, input,
-cursor, filtering, presentation, settings and owner registry paths.
+The client constructs UIMessageBox and UIMessageBoxAutoreturn through 5F8C40 and
+5F8E10 and registers them in UIWindowMgr list +174. Their shared native hit method
+B217C0 tests the window rectangle and recurses into child controls. Previously,
+the naming heuristic rejected these classes, leaving their clicks vulnerable to
+the underlying window's inverse transform.
 
-The hotkey fixture checks missing and blank INI entries, alternate chords,
-case-insensitive aliases, exact modifiers, invalid/truncated values, numeric
-overflow, duplicate bindings and atomic per-action consumption. It also executes
-the real runtime toggle consumers. The settings fixture checks message routing,
-overlay activation, held keys, generated characters, focus changes, native
-Alt+F4 behavior, apply/save, capture deferral and resource cleanup.
+The generic admission fallback now requires primary, nonvirtual UIFrameWnd and
+UIWindow bases. The native RTTI audit identifies eight newly admitted framed
+classes. Direct UIWindow descendants include actor gauges and raw bitmap controls;
+those keep their existing policies. The RTTI fixture exercises actual admission,
+malformed metadata, class-independent dialog names and live-vtable identity. Its
+modal-input case uses different transforms for overlapping windows, verifies the
+modal's native child-button coordinates, and restores the underlying owner after
+the modal disappears or becomes stale.
 
-Native verification passes all 21 direct calls, 3 bitmap/background spans,
-3 input/refresh spans, 2 offscreen returns, the central mouse return and layout
-evidence. Assembly fixtures check argument forwarding, registers, return values,
-stack cleanup and continuations. The runtime auditor accepts 1.0 and older 3E/3F
-logs, isolates the newest run and rejects missing or invalid bounds samples.
+## Fullscreen map
 
-The DLL is PE32/i386 with exactly 185 expected WinMM exports and no static
-imports, IAT or delay imports. Source checksums are in `SHA256SUMS`; downloadable
-package checksums are attached to the release. Host tests do not launch PRM or
-prove every Wine/driver combination. The new keybind behavior has automated
-coverage; it has not yet been manually tested in-game.
+The existing map renderer records same-frame, same-thread visual occlusion only
+after the native draw executes. Exact identity, visibility and fullscreen bounds
+are revalidated before suppressing a later character-name bitmap/background.
+Names before the map draw remain part of the normal draw order. The marker cannot
+carry into another frame or survive a hidden/replaced map.
 
-## Compatibility and manual coverage
+The world ray, character movement correction, UI hit selection and map-region
+input are unchanged by this rendering correction. Tests cover both horizontal
+and vertical name classes, bitmap/background suppression, draw order, frame and
+thread boundaries, map closure, geometry/vtable changes, disabled scaling and
+unrelated windows.
 
-The target PRM.exe is unchanged, SHA256
+## Verification scope
+
+All 22 host harnesses pass. They execute production C functions and native assembly bridges
+with 32-bit fixtures and sanitizer coverage. They do not launch the game. Native
+hook checks are run against PRM.exe SHA256
 `5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b`.
-The user's in-game testing was on Wine/Lutris at 3440×1440, including 133% and
-200% UI scale. The supplied INI defaults to 150%; other render resolutions must
-be configured explicitly. Geometry tests include multiple resolutions and
-133%, 150% and 200% scaling, but they are not a substitute for visual testing at
-every resolution.
+The executable is not modified. Source/build input hashes are in SHA256SUMS;
+local test output is kept under evidence/modal-map-fix outside the game folder.
 
-## Known issues reported during release preparation
+The installed test DLL preserves the INI, including the Shift+P overlay binding,
+blank optional shortcuts and the user's live scale/filter preferences.
+The published 1.0 tag and ZIP retain their original tested source and binary.
 
-- A character hover name can appear through the fullscreen map when the pointer
-  is over the character's underlying world position.
-- OK/Cancel buttons in native confirmation dialogs, such as skill-point
-  confirmation and returning to login, may not respond with scaling enabled.
-  Disabling scaling through the overlay allows those dialogs to be used.
+Test DLL: 223744 bytes, PE32/i386, 185 exact WinMM exports, no static
+imports, IAT or delay imports. SHA256:
 
-These reports are recorded for the next fix. They are not represented as solved
-by the 1.0 shortcut and packaging changes.
+`a963f1e7993ac52a659e4f56463ded3d93ced9d5ae1ee74dc9772844a3063fa5`

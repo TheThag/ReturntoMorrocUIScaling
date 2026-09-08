@@ -40,7 +40,7 @@ prefix += r"""
 typedef DWORD (__attribute__((thiscall)) *PFN_SpriteSubmit)(void*,void*,DWORD);
 typedef DWORD (*PFN_WindowBackgroundDraw)(LONG,LONG,LONG,LONG,DWORD);
 typedef struct { BYTE bytes[64]; } NativeWindow;
-static NativeWindow known_window, second_window, unknown_window;
+static NativeWindow known_window, second_window, unknown_window, map_window;
 """
 
 
@@ -52,12 +52,15 @@ stubs = replace_function(
     OwnerWindowState* st=0;
     if(obj==(DWORD)(ULONG_PTR)&known_window) st=&states[1];
     else if(obj==(DWORD)(ULONG_PTR)&second_window) st=&states[2];
+    else if(obj==(DWORD)(ULONG_PTR)&map_window) st=&states[3];
     else return 0;
     if(!st->object_ptr && create) {
         st->object_ptr=obj;
         st->vtable_ptr=obj^0x12345678UL;
         strcpy(st->class_name,"UIItemWnd");
     }
+    if(st && obj==(DWORD)(ULONG_PTR)&map_window && create)
+        st->vtable_ptr=*(DWORD*)(void*)&map_window;
     return st->object_ptr?st:0;
 }""",
 )
@@ -79,6 +82,9 @@ production = "\n".join(
         "owner_class_is_world_label",
         "owner_class_is_world_title",
         "owner_class_is_world_name",
+        "owner_map_native_identity",
+        "owner_map_fullscreen_visible",
+        "owner_map_occludes_world_name",
         "owner_class_should_hook",
         "owner_input_touch_state",
         "owner_fit_rect",
@@ -107,11 +113,13 @@ static Quad box_quad,text_left,text_right,nested_quad,unknown_quad,parent_quad;
 static Primitive box_primitive,left_primitive,right_primitive,nested_primitive;
 static Primitive unknown_primitive,parent_primitive;
 static DWORD expected_primitive,submit_calls,background_calls,bitmap_calls;
+static DWORD name_bitmap_calls;
 static DWORD expected_x,expected_y,expected_w,expected_h,expected_color;
 static DWORD expected_owner;
 static DWORD background_return,bitmap_return;
 static DWORD __attribute__((thiscall)) native_submit(void*,void*,DWORD);
 static DWORD native_background(LONG,LONG,LONG,LONG,DWORD);
+static DWORD native_name_bitmap(void*,LONG,LONG,LONG,LONG,DWORD);
 
 static void native_window_set(NativeWindow* window,LONG x,LONG y,LONG w,LONG h) {
     *(LONG*)(window->bytes+0x14)=w;
@@ -124,9 +132,20 @@ static void reset_all(void) {
     memset(&known_window,0,sizeof(known_window));
     memset(&second_window,0,sizeof(second_window));
     memset(&unknown_window,0,sizeof(unknown_window));
+    memset(&map_window,0,sizeof(map_window));
     memset(states,0,sizeof(states));
     memset(g_owner_bitmap_draws,0,sizeof(g_owner_bitmap_draws));
     memset(&g_owner_bitmap_scope,0,sizeof(g_owner_bitmap_scope));
+    memset(&g_owner_map_occlusion,0,sizeof(g_owner_map_occlusion));
+    if(!g_exe) { g_exe=calloc(1,0xab8000UL); CHECK(g_exe); g_exe_size=0xab8000UL; }
+    memset((BYTE*)g_exe+0xab76d8UL+0x3c4,0,4);
+    map_window.bytes[0]=(BYTE)0; /* keep the fixture visibly initialized */
+    *(DWORD*)(void*)&map_window=(DWORD)(ULONG_PTR)((BYTE*)g_exe+PRM_MAP_VTABLE_RVA);
+    *(LONG*)(map_window.bytes+0x14)=1920; *(LONG*)(map_window.bytes+0x18)=1080;
+    *(LONG*)(map_window.bytes+0x1c)=0; *(LONG*)(map_window.bytes+0x20)=0;
+    *(DWORD*)(map_window.bytes+0x28)=1;
+    *(DWORD*)((BYTE*)g_exe+0xab76d8UL+0x3c4)=(DWORD)(ULONG_PTR)&map_window;
+    strcpy(owner_state_for((DWORD)(ULONG_PTR)&map_window,1)->class_name,"UIRoMapWnd");
     g_owner_bitmap_lock=0;
     g_ui_present_serial=100;
     g_owner_bitmap_calls=g_owner_bitmap_submits=g_owner_bitmap_matched=0;
@@ -144,6 +163,7 @@ static void reset_all(void) {
     g_owner_tagged_draws=g_ui_scaled_draws=0;
     unreadable=0; g_GetCurrentThreadId=thread_id;
     expected_primitive=submit_calls=background_calls=bitmap_calls=0;
+    name_bitmap_calls=0;
     expected_x=expected_y=expected_w=expected_h=expected_color=0;
     expected_owner=0; background_return=0xBADC0DE1; bitmap_return=0xBADC0DE2;
     g_owner_bitmap_submit=native_submit;
@@ -201,6 +221,13 @@ static DWORD native_bitmap(void* dc,LONG x,LONG y,LONG w,LONG h,DWORD color) {
     submit_primitive(&left_primitive);
     submit_primitive(&right_primitive);
     return bitmap_return;
+}
+
+static DWORD native_name_bitmap(void* dc,LONG x,LONG y,LONG w,LONG h,DWORD color) {
+    CHECK(dc==(void*)(ULONG_PTR)0x4567 && color==0xffabcdef);
+    CHECK(g_owner_bitmap_scope.object_ptr==(DWORD)(ULONG_PTR)&known_window);
+    ++name_bitmap_calls;
+    return 0x13572468;
 }
 
 static void transformed(const Quad* original,const Quad* out,float ax,float ay,
@@ -367,12 +394,49 @@ static void unknown_and_unreadable_do_not_borrow_parent(void) {
     CHECK(g_owner_bitmap_active_count==0);
 }
 
+static void fullscreen_map_suppresses_name_box_and_bitmap(void) {
+    OwnerWindowState* name,*map; OwnerBitmapScope outer;
+    reset_all();
+    /* test_map.py exercises the production map wrapper itself.  Here seed the
+       copied post-map marker directly so this fixture stays focused on the
+       cdecl background/bitmap suppression paths and their scope restoration. */
+    map=owner_state_for((DWORD)(ULONG_PTR)&map_window,1);
+    CHECK(map && owner_bitmap_prepare((DWORD)(ULONG_PTR)&map_window,0,0,1920,1080));
+    g_owner_map_occlusion.object_ptr=(DWORD)(ULONG_PTR)&map_window;
+    g_owner_map_occlusion.vtable_ptr=map->vtable_ptr;
+    g_owner_map_occlusion.thread=thread_id();
+    g_owner_map_occlusion.present=g_ui_present_serial+1;
+    g_owner_map_occlusion.draw_order=map->last_draw_order;
+    g_owner_map_occlusion.frame_bbox=map->frame_bbox;
+    g_owner_map_occlusion.valid=1;
+    native_window_set(&known_window,600,300,120,24);
+    name=owner_state_for((DWORD)(ULONG_PTR)&known_window,1);
+    strcpy(name->class_name,"UINameBalloonText");
+    expected_owner=(DWORD)(ULONG_PTR)&known_window;
+    expected_x=600; expected_y=300; expected_w=120; expected_h=24;
+    expected_color=0xffabcdef;
+    outer=g_owner_bitmap_scope;
+    CHECK(g_owner_map_occlusion.valid);
+    /* Both the manager rectangle and cached bitmap are skipped, while the
+       enclosing owner scope and native callbacks remain untouched. */
+    CHECK(owner_background_draw_c(expected_owner,expected_x,expected_y,
+                                  expected_w,expected_h,expected_color)==0);
+    CHECK(background_calls==0 && g_owner_map_background_suppressed==1);
+    CHECK(!memcmp(&g_owner_bitmap_scope,&outer,sizeof(outer)));
+    CHECK(owner_bitmap_draw_c(expected_owner,(void*)(ULONG_PTR)0x4567,
+                              (void*)native_name_bitmap,expected_x,expected_y,
+                              expected_w,expected_h,expected_color)==0);
+    CHECK(bitmap_calls==0 && name_bitmap_calls==0 && g_owner_map_name_suppressed==1);
+    CHECK(!memcmp(&g_owner_bitmap_scope,&outer,sizeof(outer)));
+}
+
 int main(void) {
     CHECK(sizeof(void*)==4 && sizeof(Primitive)==8);
     background_and_bitmap_share_transform();
     nested_scope_restores_outer();
     unknown_and_unreadable_do_not_borrow_parent();
-    puts("PASS background ownership: first-draw direct box and cached text share 150/200% transforms, tiled registry provenance, nested restoration, unknown/unreadable forwarding, and parent-scope isolation");
+    fullscreen_map_suppresses_name_box_and_bitmap();
+    puts("PASS background ownership: first-draw direct box and cached text share 150/200% transforms, tiled registry provenance, nested restoration, unknown/unreadable forwarding, parent-scope isolation, and fullscreen-map suppression of world-name background plus bitmap");
     return 0;
 }
 """

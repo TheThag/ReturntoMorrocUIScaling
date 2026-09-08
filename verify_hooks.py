@@ -85,6 +85,31 @@ VIEWPORT_STORES = (
 # stores UIMinimapZoomWnd there; verify the native load and our lookup RVA.
 MINIMAP_OWNER = (0x00331E9F, bytes.fromhex("83 3d 80 78 eb 00 00"), 0x00AB7880)
 
+# UIRoMapWnd is a normal manager-owned UIWindow, but its region/marker pass is
+# reached through a separate manager dispatch.  These spans pin the native
+# object identity used by the C wrapper: the class constructor writes the
+# D3D858 vtable, the manager factory reads/stores the +3C4 singleton, and the
+# shared UIWindow hit routine treats +0x28 as the visibility flag.
+MAP_OWNER_LAYOUT = (
+    ("UIRoMapWnd constructor vtable", 0x001735E3,
+     bytes.fromhex("c7 07 58 d8 d3 00")),
+    ("Map factory reads UIWindowMgr+3C4", 0x0020409E,
+     bytes.fromhex("8b 9f c4 03 00 00")),
+    ("Map factory calls UIRoMapWnd constructor", 0x002040C5,
+     bytes.fromhex("e8 d6 f4 f6 ff")),
+    ("Map factory stores UIWindowMgr+3C4", 0x002040D9,
+     bytes.fromhex("89 9f c4 03 00 00")),
+    ("UIWindow visibility field +0x28", 0x007217D9,
+     bytes.fromhex("83 7e 28 00")),
+)
+
+# Keep the wrapper's native dispatch proof explicit even though the same
+# callsite is also listed in HOOKS.  The source marker checks ensure the
+# callsite remains routed through owner_map_draw_scoped after refactors.
+MAP_DRAW_DISPATCH = (
+    0x0020BA38, bytes.fromhex("e8 a3 f9 f6 ff"), 0x0017B3E0,
+)
+
 
 # Native layout evidence for the separately registered Basic Info/menu block.
 # No new patch uses these addresses; they validate the object ID and placement.
@@ -216,6 +241,48 @@ def main():
         if source_constant(source, "PRM_MINIMAP_WINDOW_RVA") != owner_rva:
             raise ValueError("Minimap owner: source pointer RVA differs")
         print("Minimap owner: native UIWindowMgr+1A8 reference and source RVA match")
+    except ValueError as error:
+        failures.append(str(error))
+    map_layout_ok = True
+    for label, rva, expected in MAP_OWNER_LAYOUT:
+        try:
+            actual = pe.read_code(rva, len(expected))
+            if actual != expected:
+                raise ValueError(
+                    f"{label}: native bytes differ at RVA 0x{rva:08X}; "
+                    f"found {actual.hex(' ')}, expected {expected.hex(' ')}")
+        except ValueError as error:
+            map_layout_ok = False
+            failures.append(str(error))
+    try:
+        value = source_constant(source, "PRM_MAP_VTABLE_RVA")
+        if value != 0x0093D858:
+            raise ValueError("Map owner: source vtable RVA differs")
+        for marker in (
+            "owner_map_native_identity",
+            "owner_map_fullscreen_visible",
+            "owner_map_draw_scoped",
+            "owner_submit_patch_rel_call(base+PRM_MAP_DRAW_CALL_RVA,(void*)owner_map_draw_scoped)",
+        ):
+            if marker not in source:
+                raise ValueError(f"Map owner: source marker missing: {marker}")
+        print("Map owner: UIRoMapWnd constructor vtable D3D858, UIWindowMgr+3C4 singleton, +0x28 visibility, and scoped draw path: OK" if map_layout_ok else
+              "Map owner: source identity/scoped draw markers OK; native layout evidence failed")
+    except ValueError as error:
+        failures.append(str(error))
+    map_call_rva, map_call_bytes, map_target = MAP_DRAW_DISPATCH
+    try:
+        actual = pe.read_code(map_call_rva, len(map_call_bytes))
+        if actual != map_call_bytes:
+            raise ValueError(
+                f"Map draw dispatch: native bytes differ at RVA 0x{map_call_rva:08X}; "
+                f"found {actual.hex(' ')}, expected {map_call_bytes.hex(' ')}")
+        instruction = pe.read_code(map_call_rva, 5)
+        target = map_call_rva + 5 + struct.unpack("<i", instruction[1:])[0]
+        if target != map_target:
+            raise ValueError(
+                f"Map draw dispatch: native target 0x{target:08X}, expected 0x{map_target:08X}")
+        print(f"Map draw dispatch: native RVA 0x{map_call_rva:08X} -> 0x{target:08X}; scoped wrapper source marker: OK")
     except ValueError as error:
         failures.append(str(error))
     try:

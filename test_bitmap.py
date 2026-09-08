@@ -18,7 +18,10 @@ source = (ROOT / "prm_uifix.c").read_text()
 
 
 def function(name):
-    match = re.search(r"^(?:static )?[^\n]*\b" + re.escape(name) + r"\([^;]*?\)\s*\{", source, re.M)
+    # Anchor at a definition line.  A newly added helper can be called by an
+    # earlier wrapper, and the old unanchored expression would extract that
+    # call's brace instead of the helper body.
+    match = re.search(r"^(?![ \t]*(?:if|while|for|switch|return)\b)[ \t]*(?:static\s+)?[^\n]*\b" + re.escape(name) + r"\([^;{}]*?\)\s*\{", source, re.M)
     if not match:
         raise RuntimeError(f"Cannot extract production function: {name}")
     depth, end = 1, match.end()
@@ -45,12 +48,13 @@ start = source.index("static int g_owner_bitmap_enabled=")
 end = source.index("#define MAX_OWNER_CAPTURE_LINKS", start)
 types = struct_type("OwnerWindowState") + "\n" + source[start:end]
 types += "\n" + "\n".join(constant(name) for name in (
-    "OWNER_BITMAP_PROBES", "PRM_OFFSCREEN_DP_RETURN_RVA", "PRM_OFFSCREEN_DIP_RETURN_RVA",
+    "OWNER_BITMAP_PROBES", "PRM_MAP_VTABLE_RVA", "PRM_OFFSCREEN_DP_RETURN_RVA", "PRM_OFFSCREEN_DIP_RETURN_RVA",
 ))
 production = "\n".join(function(name) for name in (
     "f_abs", "fvf_stride", "ui_scale_factor", "rect_is_global", "choose_group_anchor",
     "owner_class_is_hover_popup", "owner_class_is_world_label", "owner_class_is_world_title", "owner_class_is_world_name", "owner_class_should_hook",
     "owner_input_touch_state", "owner_fit_rect", "owner_bitmap_prepare",
+    "owner_map_native_identity", "owner_map_fullscreen_visible", "owner_map_occludes_world_name",
     "owner_bitmap_draw_c", "owner_bitmap_registry_lock", "owner_bitmap_registry_unlock",
     "owner_bitmap_bucket", "owner_bitmap_forget", "owner_bitmap_note_vertices",
     "owner_bitmap_consume_transform", "owner_bitmap_consume_vertices", "looks_like_ui_vertices", "make_scaled_ui_vertices",
@@ -85,6 +89,8 @@ static LONG g_ui_screen_w,g_ui_screen_h,g_ui_origin_x,g_ui_origin_y;
 static int g_ui_anchor_mode,g_ui_global_threshold_percent,g_ui_scale_percent;
 static DWORD g_owner_tagged_draws,g_ui_scaled_draws;
 static DWORD g_ui_frame_rect_count,g_owner_frame_member_count;
+static void* g_exe;
+static DWORD g_exe_size;
 static DWORD thread_id(void) { return 17; }
 static DWORD (*g_GetCurrentThreadId)(void)=thread_id;
 static const void* unreadable;
@@ -161,6 +167,7 @@ typedef union { DWORD d[4][8]; float f[4][8]; BYTE bytes[128]; } Quad;
 static void reset(void) {
     memset(g_owner_bitmap_draws,0,sizeof(g_owner_bitmap_draws));
     memset(&g_owner_bitmap_scope,0,sizeof(g_owner_bitmap_scope));
+    memset(&g_owner_map_occlusion,0,sizeof(g_owner_map_occlusion));
     memset(states,0,sizeof(states));
     g_owner_bitmap_lock=0; g_ui_present_serial=100;
     g_owner_bitmap_calls=g_owner_bitmap_submits=g_owner_bitmap_matched=0;
@@ -168,6 +175,7 @@ static void reset(void) {
     g_owner_bitmap_unsupported=g_owner_bitmap_peak=g_owner_bitmap_offscreen=0;
     g_owner_bitmap_unowned=g_owner_bitmap_order=g_owner_bitmap_active_count=0;
     g_owner_bitmap_frame_calls=g_owner_input_order=0;
+    g_owner_map_name_suppressed=g_owner_map_background_suppressed=0;
     g_owner_submit_enabled=g_owner_scale_enabled=g_owner_tooltip_enabled=1;
     g_owner_bitmap_hooks_installed=g_ui_enabled=g_ui_runtime_enabled=1;
     g_ui_scale_global=1; g_ui_scale_unmatched=0;

@@ -1,4 +1,7 @@
-# Return to Morroc UI Scaling — UI FIX 1.0
+# Return to Morroc UI Scaling — UI FIX
+
+This development branch contains the next confirmation-dialog and fullscreen-map
+hover-name corrections. The published download below remains version 1.0.
 
 UI FIX enlarges the game interface while keeping clicks, dragging and tooltips
 aligned with their windows. It includes screen fitting, corrected world input,

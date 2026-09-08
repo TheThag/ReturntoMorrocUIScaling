@@ -64,6 +64,12 @@ typedef union { DWORD d[4][8]; float f[4][8]; BYTE bytes[128]; } Quad;
 
 STUBS = r'''
 static void owner_popup_trace_first(OwnerWindowState* st) { (void)st; }
+/* This bounds fixture has no fullscreen map; map occlusion is exercised by
+   the composed map/background fixtures. */
+static DWORD g_owner_map_name_suppressed;
+static int owner_map_occludes_world_name(DWORD obj,OwnerWindowState* st) {
+    (void)obj; (void)st; return 0;
+}
 static int owner_is_buff_tooltip(DWORD obj) { (void)obj; return 0; }
 static void owner_buff_popup_offset(OwnerWindowState* st,LONG x,LONG y,LONG w) { (void)st; (void)x; (void)y; (void)w; }
 static DWORD g_ui_present_serial,g_owner_input_order;

@@ -1,6 +1,6 @@
 # PRM UI FIX implementation notes
 
-Version 1.0. These notes describe the native client paths and the implemented
+Version 1.0.1 development. These notes describe the native client paths and the implemented
 ownership rules. For installation and settings, see [README](../README.md).
 
 ## Screen bounds and live settings
@@ -60,6 +60,46 @@ actual Wine appearance or display-driver support.
 DumpDiagnostics adds live UISettings and each input owner's fit percentage, correction offset
 and displayed rectangle. The bounds auditor checks the newest run/sample and
 distinguishes diagnostic coverage from the user's interaction result.
+
+## Framed-window admission
+
+Ordinary dialogs also derive from `UIFrameWnd` without necessarily naming their
+leaf class `Wnd` or `Window`. `UIMessageBox`, `UIMessageBoxAutoreturn`,
+`UIAgitMessageBox` and `UINoticeMessageBox_LockSellItem` all have native
+`UIFrameWnd -> UIWindow -> UIRPData` ancestry with PMD `(0,-1,0)`.
+The corresponding primary RTTI locators are DB31D4, DB3228, DA9AA0 and DAA088.
+
+State admission now checks a bounded native RTTI base array when the existing
+semantic classification has no rule. Both UIFrameWnd and UIWindow must be
+nonvirtual bases at the object's current address. This admits generic framed
+windows, including confirmation dialogs, into the existing bitmap, input and
+capture paths. It does not depend on a list of dialog leaf names. Names and all
+RTTI metadata are checked against the executable image bounds before reading.
+
+UIWindow alone is too broad for this fallback: the native hierarchy also includes
+raw bitmap controls, world-attached gauges and balloons. Those retain their
+existing classification and attachment policies. The native hierarchy audit
+identifies eight newly admitted framed classes, including the four confirmation
+families, UINormalMB, CMergeItemWnd, CUICollectionSystemWnd and UIGuild_Storage_Log.
+
+## Fullscreen map and hover-name draw order
+
+The manager registers UIRoMapWnd in list +174 and stores it at manager +3C4.
+Its scene-sized image is drawn through the existing map call at 60BA38. A
+transient character-name window registered later can otherwise be drawn after
+the map, leaving the name visible over that image.
+
+The map renderer records an occlusion marker only after its original draw runs.
+The marker is valid for the current frame and render thread, identifies the
+native map object/vtable, and requires visible fullscreen bounds. Later
+UINameBalloonText and UIVerticalNameBalloonText bitmap and background draws are
+suppressed while that map identity and geometry remain valid. A name drawn
+before the map retains normal rendering and is covered by the map itself.
+The marker expires at the next presentation; hiding/replacing the map revokes
+it immediately. Other windows and actor-attached UI retain their existing rules.
+
+This is a rendering correction. The accepted raw-pointer world ray, movement
+input and native map-region interaction remain unchanged.
 
 ## Native hit ownership
 

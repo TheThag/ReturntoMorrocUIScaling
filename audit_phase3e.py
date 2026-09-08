@@ -7,8 +7,8 @@ import sys
 
 def audit(text):
     runs = list(re.finditer(r'^=== PRM .* (?:Phase|Version) (\S+).*$', text, re.M))
-    if not runs or runs[-1][1] not in ('3E', '3F', '1.0'):
-        return 2, ['REVIEW: The newest run is not UI FIX 1.0 or Phase 3E/3F.']
+    if not runs or runs[-1][1] not in ('3E', '3F', '1.0', '1.0.1-dev'):
+        return 2, ['REVIEW: The newest run is not UI FIX 1.0/1.0.1-dev or Phase 3E/3F.']
     phase = runs[-1][1]
     run = text[runs[-1].start():]
     samples = list(re.finditer(r'^OWNER INPUT ' + re.escape(phase) + r' .*$', run, re.M))

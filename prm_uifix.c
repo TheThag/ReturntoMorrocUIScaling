@@ -1,5 +1,5 @@
 /*
- * PRM UI FIX 1.0 - window ownership, scaling and configurable shortcuts
+ * PRM UI FIX 1.0.1-dev - window ownership, scaling and configurable shortcuts
  * 32-bit WINMM proxy for Return to Morroc PRM.exe
  *
  * Runtime integration:
@@ -97,6 +97,7 @@ typedef struct _LOGFONTA {
 #define PRM_SPECIAL_DRAW_TARGET_RVA 0x0017B6B0UL
 #define PRM_MAP_DRAW_CALL_RVA      0x0020BA38UL
 #define PRM_MAP_DRAW_TARGET_RVA    0x0017B3E0UL
+#define PRM_MAP_VTABLE_RVA         0x0093D858UL
 #define PRM_MINIMAP_DRAW_CALL_RVA  0x0034024DUL
 #define PRM_BUFF_HOVER_CALL_RVA    0x00341A30UL
 #define PRM_BUFF_HOVER_TARGET_RVA  0x0035BF60UL
@@ -953,7 +954,7 @@ static void install_device_hooks(void* obj) {
     e=patch_vtable_slot(vt,31,(void*)hook_DrawPrimitiveVB,&r->orig_draw_vb);
     f=patch_vtable_slot(vt,32,(void*)hook_DrawIndexedPrimitiveVB,&r->orig_draw_indexed_vb);
     g=patch_vtable_slot(vt,35,(void*)hook_SetTexture,&r->orig_set_texture);
-    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (1.0 owner UI + isolated world input)");
+    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (1.0.1-dev owner UI + isolated world input)");
     else log_line("Direct3DDevice7 hooks: PARTIAL/FAILED");
 }
 
@@ -1196,30 +1197,90 @@ static int owner_name_interesting(const char* n) {
            s_contains(n,"Skill") || s_contains(n,"Equip") || s_contains(n,"Item");
 }
 
+/* All RTTI metadata must remain inside the loaded executable image.  Use
+ * subtraction for bounds checks so malformed 32-bit pointers cannot wrap. */
+static int rtti_image_readable(DWORD address, DWORD bytes) {
+    DWORD base=(DWORD)(ULONG_PTR)g_exe, offset;
+    if(!base || !bytes || address<base) return 0;
+    offset=address-base;
+    return offset<g_exe_size && bytes<=g_exe_size-offset &&
+           mem_readable((void*)(ULONG_PTR)address,bytes);
+}
+
+static int rtti_type_is(DWORD td, const char* decorated) {
+    unsigned int i,n=s_len(decorated);
+    if(!rtti_image_readable(td,8+n+1)) return 0;
+    for(i=0;i<=n;++i)
+        if(((const char*)(ULONG_PTR)td)[8+i]!=decorated[i]) return 0;
+    return 1;
+}
+
 /* MSVC x86 RTTI: vtable[-1] -> CompleteObjectLocator, COL+0x0c -> TypeDescriptor.
- * TypeDescriptor+8 is the decorated class name. */
+ * TypeDescriptor+8 is the decorated class name.  Names are labels, not proof
+ * of UIWindow inheritance; admit otherwise unnamed families separately below. */
 static int rtti_name_from_object(DWORD objv, char* out, unsigned int cap, DWORD* out_vtable_rva) {
-    BYTE* base=(BYTE*)g_exe; DWORD vt,col,td; const char* raw; unsigned int i=0,j=0;
+    DWORD vt,col,td; unsigned int i,j=0;
     if(out_vtable_rva) *out_vtable_rva=0;
-    if(!base || !g_exe_size || objv<0x10000UL || !mem_readable((void*)objv,4)) return 0;
-    vt=*(DWORD*)objv;
-    if(vt<(DWORD)(ULONG_PTR)base+4 || vt>=(DWORD)(ULONG_PTR)base+g_exe_size || !mem_readable((void*)(vt-4),4)) return 0;
-    col=*(DWORD*)(vt-4);
-    if(col<(DWORD)(ULONG_PTR)base || col+20>(DWORD)(ULONG_PTR)base+g_exe_size || !mem_readable((void*)col,20)) return 0;
-    td=*(DWORD*)(col+12);
-    if(td<(DWORD)(ULONG_PTR)base || td+12>(DWORD)(ULONG_PTR)base+g_exe_size || !mem_readable((void*)td,12)) return 0;
-    raw=(const char*)(td+8);
-    if(!(raw[0]=='.' && raw[1]=='?' && raw[2]=='A' && (raw[3]=='V' || raw[3]=='U'))) return 0;
-    i=4;
-    while(raw[i] && j+1<cap) {
-        if(raw[i]=='@' && raw[i+1]=='@') break;
-        out[j++]=raw[i++];
-        if(i>140) break;
+    if(!out || cap<2) return 0;
+    out[0]=0;
+    if(objv<0x10000UL || !mem_readable((void*)(ULONG_PTR)objv,4)) return 0;
+    vt=*(DWORD*)(ULONG_PTR)objv;
+    if(vt<4 || !rtti_image_readable(vt-4,8)) return 0;
+    col=*(DWORD*)(ULONG_PTR)(vt-4);
+    if(!rtti_image_readable(col,20)) return 0;
+    td=*(DWORD*)(ULONG_PTR)(col+12);
+    if(!rtti_image_readable(td,12)) return 0;
+    if(((const char*)(ULONG_PTR)td)[8]!='.' || ((const char*)(ULONG_PTR)td)[9]!='?' ||
+       ((const char*)(ULONG_PTR)td)[10]!='A' ||
+       (((const char*)(ULONG_PTR)td)[11]!='V' && ((const char*)(ULONG_PTR)td)[11]!='U')) return 0;
+    for(i=4;i<144;++i) {
+        char c;
+        if(!rtti_image_readable(td,8+i+2)) break;
+        c=((const char*)(ULONG_PTR)td)[8+i];
+        if(c=='@' && ((const char*)(ULONG_PTR)td)[8+i+1]=='@') {
+            out[j]=0;
+            if(out_vtable_rva) *out_vtable_rva=vt-(DWORD)(ULONG_PTR)g_exe;
+            return j>0;
+        }
+        if(!c || j+1>=cap) break;
+        out[j++]=c;
     }
-    out[j]=0;
-    if(!owner_name_interesting(out)) return 0;
-    if(out_vtable_rva) *out_vtable_rva=vt-(DWORD)(ULONG_PTR)base;
-    return j>0;
+    out[0]=0; return 0;
+}
+
+/* Return 1 for a primary, nonvirtual UIFrameWnd, 2 for a UIWindow balloon.
+ * Confirmation windows such as UIMessageBox have ordinary UIWindow layout
+ * without Wnd/Window in their leaf names.  Inspect the bounded native base
+ * array once at state admission instead of adding per-dialog name exceptions.
+ * Other UIWindow descendants include actor gauges and raw bitmap controls;
+ * they still require their existing semantic/attachment policy. */
+static int owner_rtti_window_family(DWORD obj) {
+    DWORD vt,col,chd,count,array,i; int window=0,frame=0,balloon=0;
+    if(!obj || !mem_readable((void*)(ULONG_PTR)obj,4)) return 0;
+    vt=*(DWORD*)(ULONG_PTR)obj;
+    if(vt<4 || !rtti_image_readable(vt-4,8)) return 0;
+    col=*(DWORD*)(ULONG_PTR)(vt-4);
+    if(!rtti_image_readable(col,20) || *(DWORD*)(ULONG_PTR)col!=0 ||
+       *(DWORD*)(ULONG_PTR)(col+4)!=0 || *(DWORD*)(ULONG_PTR)(col+8)!=0) return 0;
+    chd=*(DWORD*)(ULONG_PTR)(col+16);
+    if(!rtti_image_readable(chd,16) || *(DWORD*)(ULONG_PTR)chd!=0) return 0;
+    count=*(DWORD*)(ULONG_PTR)(chd+8); array=*(DWORD*)(ULONG_PTR)(chd+12);
+    if(!count || count>64 || !rtti_image_readable(array,count*4)) return 0;
+    for(i=0;i<count;++i) {
+        DWORD bcd=*(DWORD*)(ULONG_PTR)(array+i*4),td;
+        if(!rtti_image_readable(bcd,24)) return 0;
+        td=*(DWORD*)(ULONG_PTR)bcd;
+        if(!rtti_image_readable(td,12)) return 0;
+        if(rtti_type_is(td,".?AVUIBalloonText@@")) balloon=1;
+        if(rtti_type_is(td,".?AVUIWindow@@") || rtti_type_is(td,".?AVUIFrameWnd@@")) {
+            /* PMD=(mdisp,pdisp,vdisp) must address this exact native object. */
+            if(*(LONG*)(ULONG_PTR)(bcd+8)!=0 || *(LONG*)(ULONG_PTR)(bcd+12)!=-1 ||
+               *(LONG*)(ULONG_PTR)(bcd+16)!=0) return 0;
+            if(rtti_type_is(td,".?AVUIWindow@@")) window=1;
+            else frame=1;
+        }
+    }
+    return window?(balloon?2:(frame?1:0)):0;
 }
 
 static void owner_reset(void) {
@@ -1249,7 +1310,7 @@ static void owner_scan_stack(const UIRectF* r, void* frame) {
     q=(BYTE*)frame; end=(BYTE*)mbi.BaseAddress+mbi.RegionSize; limit=q+g_owner_scan_bytes; if(limit<q || limit>end) limit=end;
     for(;q+4<=limit;q+=4) {
         DWORD obj=*(DWORD*)q, vr=0; char name[72];
-        if(rtti_name_from_object(obj,name,sizeof(name),&vr)) owner_add(obj,vr,name,(LONG)(q-(BYTE*)frame),r);
+        if(rtti_name_from_object(obj,name,sizeof(name),&vr) && owner_name_interesting(name)) owner_add(obj,vr,name,(LONG)(q-(BYTE*)frame),r);
         if(++scanned>=2048) break;
     }
 }
@@ -1459,6 +1520,16 @@ static DWORD g_owner_bitmap_active_count;
 static DWORD g_owner_bitmap_frame_calls;
 static DWORD g_owner_map_draws;
 static DWORD g_owner_minimap_draws;
+/* A fullscreen map is a visual occluder only after its own native draw has
+ * really run.  Keep this as a one-frame render-thread fact; input continues
+ * to consume the copied regions and world-ray coordinates independently. */
+typedef struct {
+    DWORD object_ptr,vtable_ptr,thread,present,draw_order;
+    UIRectF frame_bbox;
+    int valid;
+} OwnerMapOcclusion;
+static OwnerMapOcclusion g_owner_map_occlusion;
+static DWORD g_owner_map_name_suppressed,g_owner_map_background_suppressed;
 
 #define MAX_OWNER_CAPTURE_LINKS 4096
 typedef struct { DWORD object_ptr,root_owner,present; } OwnerCaptureLink;
@@ -1578,6 +1649,10 @@ static int owner_class_should_hook(const char* n) {
     if(n[0]=='U' && n[1]=='I' && (s_contains(n,"Wnd") || s_contains(n,"Window"))) return 1;
     if(s_contains(n,"EquipWnd") || s_contains(n,"Inventory") || s_contains(n,"Skill")) return 1;
     return 0;
+}
+
+static int owner_object_should_hook(DWORD obj, const char* name) {
+    return owner_class_should_hook(name) || owner_rtti_window_family(obj)==1;
 }
 
 /* A UIWindow object can outlive the bitmap which introduced it, and the
@@ -1700,7 +1775,7 @@ static OwnerWindowState* owner_state_for(DWORD obj, int create) {
     }
     if(!create || !mem_readable((void*)obj,4)) return 0;
     name[0]=0;
-    if(!rtti_name_from_object(obj,name,sizeof(name),&vr) || !owner_class_should_hook(name)) return 0;
+    if(!rtti_name_from_object(obj,name,sizeof(name),&vr) || !owner_object_should_hook(obj,name)) return 0;
     vt=*(void***)obj; if(!vt) return 0;
     if(!st) {
         if(g_owner_window_count<MAX_OWNER_WINDOWS) st=&g_owner_windows[g_owner_window_count++];
@@ -1733,7 +1808,7 @@ static DWORD __attribute__((thiscall)) hook_UIOwnerRender(void* self) {
 
 static void owner_install_vtable(DWORD obj, DWORD vt_rva, const char* name) {
     void** vt; OwnerVtHook* vh; DWORD i, fnrva; void* orig=0; char line[256];
-    if(!g_owner_scale_enabled || !obj || !owner_class_should_hook(name) || !mem_readable((void*)obj,4)) return;
+    if(!g_owner_scale_enabled || !obj || !owner_object_should_hook(obj,name) || !mem_readable((void*)obj,4)) return;
     vt=*(void***)obj; if(!vt || owner_vt_hook_for_vt(vt)) return;
     if(g_owner_vt_hook_count>=MAX_OWNER_VT_HOOKS) return;
     if(!mem_readable(vt+g_owner_render_slot,4)) return;
@@ -2508,12 +2583,19 @@ static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
     return 1;
 }
 
+static int owner_map_occludes_world_name(DWORD obj,OwnerWindowState* st);
+
 DWORD WINAPI owner_bitmap_draw_c(DWORD obj, void* dc, void* original,
                                  LONG x, LONG y, LONG w, LONG h, DWORD color) {
-    OwnerBitmapScope saved=g_owner_bitmap_scope; DWORD rv=0;
+    OwnerBitmapScope saved=g_owner_bitmap_scope; OwnerWindowState* st; DWORD rv=0;
+    int prepared,suppress=0;
     ++g_owner_bitmap_calls;
-    owner_bitmap_prepare(obj,x,y,w,h);
-    if(original) rv=((PFN_BitmapDraw)original)(dc,x,y,w,h,color);
+    prepared=owner_bitmap_prepare(obj,x,y,w,h);
+    st=prepared?owner_state_for(obj,0):0;
+    if(prepared && owner_map_occludes_world_name(obj,st)) {
+        ++g_owner_map_name_suppressed; suppress=1;
+    }
+    if(original && !suppress) rv=((PFN_BitmapDraw)original)(dc,x,y,w,h,color);
     g_owner_bitmap_scope=saved;
     return rv;
 }
@@ -2523,13 +2605,19 @@ DWORD WINAPI owner_bitmap_draw_c(DWORD obj, void* dc, void* original,
  * rectangle the window's whole transform too; otherwise it reaches fallback
  * grouping while its text is already owned, splitting buff explanations. */
 DWORD WINAPI owner_background_draw_c(DWORD obj,LONG x,LONG y,LONG w,LONG h,DWORD color) {
-    OwnerBitmapScope saved=g_owner_bitmap_scope; DWORD rv=0;
+    OwnerBitmapScope saved=g_owner_bitmap_scope; OwnerWindowState* st=0; DWORD rv=0;
+    int prepared=0,suppress=0;
     BYTE* self=(BYTE*)(ULONG_PTR)obj;
     g_owner_bitmap_scope.object_ptr=0; g_owner_bitmap_scope.thread=0;
-    if(self && mem_readable(self+0x14,16))
-        owner_bitmap_prepare(obj,*(LONG*)(self+0x1c),*(LONG*)(self+0x20),
+    if(self && mem_readable(self+0x14,16)) {
+        prepared=owner_bitmap_prepare(obj,*(LONG*)(self+0x1c),*(LONG*)(self+0x20),
             *(LONG*)(self+0x14),*(LONG*)(self+0x18));
-    if(g_owner_background_draw) rv=g_owner_background_draw(x,y,w,h,color);
+        st=prepared?owner_state_for(obj,0):0;
+    }
+    if(prepared && owner_map_occludes_world_name(obj,st)) {
+        ++g_owner_map_background_suppressed; suppress=1;
+    }
+    if(g_owner_background_draw && !suppress) rv=g_owner_background_draw(x,y,w,h,color);
     g_owner_bitmap_scope=saved;
     return rv;
 }
@@ -2544,6 +2632,79 @@ static DWORD owner_bitmap_window_draw(void* self, PFN_WindowOverlayDraw original
     g_owner_bitmap_scope=saved;
     return rv;
 }
+
+/* The map hook is reached from the manager's exact UIRoMapWnd dispatch, but
+ * keep the occlusion fact fail-closed if an object is reused or the callsite
+ * is ever reached with another UIWindow.  The manager singleton is a native
+ * object pointer at RVA AB76D8; the map singleton is its +3C4 field and the
+ * map constructor writes vtable D3D858. */
+static int owner_map_native_identity(DWORD obj,DWORD vt) {
+    BYTE* manager; DWORD map_obj,map_vt;
+    if(!obj || !vt || !g_exe || g_exe_size<0xab76d8UL+0x3c8UL ||
+       g_exe_size<PRM_MAP_VTABLE_RVA+4) return 0;
+    manager=(BYTE*)g_exe+0xab76d8UL;
+    if(!mem_readable(manager+0x3c4,4)) return 0;
+    map_obj=*(DWORD*)(manager+0x3c4);
+    if(map_obj!=obj || !mem_readable((void*)(ULONG_PTR)obj,4)) return 0;
+    map_vt=(DWORD)(ULONG_PTR)((BYTE*)g_exe+PRM_MAP_VTABLE_RVA);
+    return vt==map_vt && *(DWORD*)(ULONG_PTR)obj==vt;
+}
+
+static int owner_map_fullscreen_visible(DWORD obj,DWORD vt,UIRectF* frame) {
+    BYTE* self=(BYTE*)(ULONG_PTR)obj; LONG x,y,w,h;
+    if(!owner_map_native_identity(obj,vt) || !self || !mem_readable(self,0x2c) ||
+       !*(DWORD*)(self+0x28) || g_ui_screen_w<=0 || g_ui_screen_h<=0) return 0;
+    x=*(LONG*)(self+0x1c); y=*(LONG*)(self+0x20);
+    w=*(LONG*)(self+0x14); h=*(LONG*)(self+0x18);
+    if(w<=0 || h<=0 || x>0 || y>0 || x+w<g_ui_screen_w || y+h<g_ui_screen_h) return 0;
+    if(frame) {
+        frame->l=(float)x; frame->t=(float)y;
+        frame->r=(float)(x+w); frame->b=(float)(y+h);
+    }
+    return 1;
+}
+
+static int owner_map_occludes_world_name(DWORD obj,OwnerWindowState* st) {
+    OwnerMapOcclusion marker=g_owner_map_occlusion; UIRectF current; DWORD token,thread;
+    BYTE* map;
+    if(!obj || !st || !owner_class_is_world_name(st->class_name) ||
+       !g_owner_bitmap_hooks_installed || !g_owner_scale_enabled || !g_ui_enabled ||
+       !g_ui_runtime_enabled || !marker.valid) return 0;
+    token=g_ui_present_serial+1;
+    if(marker.present!=token || !g_GetCurrentThreadId) return 0;
+    thread=g_GetCurrentThreadId();
+    if(!thread || marker.thread!=thread || !marker.draw_order ||
+       st->frame_tag!=token || st->last_draw_present!=token ||
+       st->last_draw_order<=marker.draw_order) return 0;
+    map=(BYTE*)(ULONG_PTR)marker.object_ptr;
+    if(!owner_map_fullscreen_visible(marker.object_ptr,marker.vtable_ptr,&current)) return 0;
+    if(current.l!=marker.frame_bbox.l || current.t!=marker.frame_bbox.t ||
+       current.r!=marker.frame_bbox.r || current.b!=marker.frame_bbox.b ||
+       !map || !mem_readable(map+0x28,4)) return 0;
+    (void)obj;
+    return 1;
+}
+
+static void owner_map_note_occlusion(void* self) {
+    DWORD obj=(DWORD)(ULONG_PTR)self,thread,token; OwnerWindowState* st; UIRectF frame;
+    g_owner_map_occlusion.valid=0;
+    if(!obj || !g_GetCurrentThreadId || !g_owner_bitmap_hooks_installed ||
+       !g_owner_scale_enabled || !g_ui_enabled || !g_ui_runtime_enabled) return;
+    thread=g_GetCurrentThreadId(); token=g_ui_present_serial+1;
+    if(!thread) return;
+    st=owner_state_for(obj,0);
+    if(!st || !s_equal(st->class_name,"UIRoMapWnd") ||
+       st->frame_tag!=token || st->last_draw_present!=token || !st->last_draw_order ||
+       !owner_map_fullscreen_visible(obj,st->vtable_ptr,&frame)) return;
+    g_owner_map_occlusion.object_ptr=obj;
+    g_owner_map_occlusion.vtable_ptr=st->vtable_ptr;
+    g_owner_map_occlusion.thread=thread;
+    g_owner_map_occlusion.present=token;
+    g_owner_map_occlusion.draw_order=st->last_draw_order;
+    g_owner_map_occlusion.frame_bbox=frame;
+    g_owner_map_occlusion.valid=1;
+}
+
 /* Some windows draw several translucent rectangles through +A0 instead of
  * returning one box through +18. Scope the manager's shared dispatch so chat
  * rows, its frame, and every other implementation keep their window owner. */
@@ -2563,10 +2724,19 @@ static DWORD __attribute__((thiscall)) owner_special_draw_scoped(void* self) {
     return owner_bitmap_window_draw(self,g_owner_special_draw);
 }
 static DWORD __attribute__((thiscall)) owner_map_draw_scoped(void* self) {
+    PFN_WindowOverlayDraw original=g_owner_map_draw; DWORD rv;
     /* UIRoMapWnd renders region previews before the manager draws its cached
        bitmap. Its direct screen primitives need the same whole-map transform. */
     ++g_owner_map_draws;
-    return owner_bitmap_window_draw(self,g_owner_map_draw);
+    /* A second manager dispatch without a valid map draw must not retain a
+       same-frame marker from an earlier object incarnation. */
+    g_owner_map_occlusion.valid=0;
+    rv=owner_bitmap_window_draw(self,original);
+    /* Set the occluder only after the original direct map renderer was
+       invoked. A missing callback or a reused/non-map object cannot suppress
+       a later world-name bitmap. */
+    if(original) owner_map_note_occlusion(self);
+    return rv;
 }
 
 static DWORD __attribute__((thiscall)) owner_minimap_draw_scoped(void* self) {
@@ -3530,7 +3700,7 @@ static void maybe_dump_owner_windows(void) {
     static OwnerInputRegion active[64];
     if(!g_owner_submit_enabled) return;
     if(!ui_hotkey_take(UIHK_DIAGNOSTICS)) return;
-    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 1.0 present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 1.0.1-dev present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
     s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
     s_append(line,sizeof(line)," ownerMouse="); s_append_uint(line,sizeof(line),g_owner_mapped_mouse);
@@ -3596,7 +3766,9 @@ static void maybe_dump_owner_windows(void) {
     line[0]=0; s_append(line,sizeof(line)," OwnerStates count="); s_append_uint(line,sizeof(line),g_owner_window_count);
     s_append(line,sizeof(line)," reclaimed="); s_append_uint(line,sizeof(line),g_owner_window_reclaimed);
     s_append(line,sizeof(line)," blocked="); s_append_uint(line,sizeof(line),g_owner_window_reclaim_blocked); log_line(line);
-    log_uint(" MapOverlay draws=",g_owner_map_draws);
+    line[0]=0; s_append(line,sizeof(line)," MapOverlay draws="); s_append_uint(line,sizeof(line),g_owner_map_draws);
+    s_append(line,sizeof(line)," nameSuppressed="); s_append_uint(line,sizeof(line),g_owner_map_name_suppressed);
+    s_append(line,sizeof(line)," backgroundSuppressed="); s_append_uint(line,sizeof(line),g_owner_map_background_suppressed); log_line(line);
     log_uint(" Minimap draws=",g_owner_minimap_draws);
     line[0]=0; s_append(line,sizeof(line)," OwnerHit hooks="); s_append_uint(line,sizeof(line),(DWORD)g_owner_hit_hooks_installed);
     s_append(line,sizeof(line)," queries="); s_append_uint(line,sizeof(line),g_owner_hit_queries);
@@ -4230,7 +4402,7 @@ static void ui_present_boundary(const char* method) {
         log_line(line);
     }
     if(g_owner_submit_enabled && g_ui_present_serial>0 && (g_ui_present_serial%1200UL)==0) {
-        line[0]=0; s_append(line,sizeof(line),"1.0 heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+        line[0]=0; s_append(line,sizeof(line),"1.0.1-dev heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
         s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
         s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
@@ -4738,7 +4910,7 @@ static void install_phase2_hooks(void) {
     if(!g_exe) return;
     ok=patch_import(g_exe,"DDRAW.dll","DirectDrawCreateEx",(void*)hook_DirectDrawCreateEx,(void**)&g_real_DirectDrawCreateEx);
     log_line(ok ? "DirectDrawCreateEx IAT hook: OK" : "DirectDrawCreateEx IAT hook: NOT FOUND");
-    if(ok) log_line("1.0 renderer armed: all-window owner UI + isolated world input");
+    if(ok) log_line("1.0.1-dev renderer armed: all-window owner UI + isolated world input");
 }
 
 /* ---------- real WINMM ---------- */
@@ -4772,7 +4944,7 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Version 1.0 ===");
+    log_line("=== PRM UI FIX Version 1.0.1-dev ===");
     log_line("Proxy DLL loaded");
     ui_hotkeys_load();
     if (g_GetPrivateProfileIntA) {
@@ -4924,7 +5096,7 @@ static void initialize_mod(void) {
     owner_submit_install_hooks();
     vtrace_install_submit_hooks();
     vtrace_install_active_vtables();
-    log_line("UI FIX 1.0 armed: shortcuts configured in INI [Keybinds]");
+    log_line("UI FIX 1.0.1-dev armed: shortcuts configured in INI [Keybinds]");
     log_line("Initialization complete");
 }
 

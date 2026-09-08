@@ -27,7 +27,7 @@ typedef DWORD (__attribute__((thiscall)) *PFN_WindowOverlayDraw)(void*);
 typedef void (__attribute__((thiscall)) *PFN_SpriteSubmit)(void*,void*,DWORD);
 static PFN_WindowOverlayDraw g_owner_map_draw;
 static PFN_SpriteSubmit g_owner_bitmap_submit;
-typedef struct { DWORD words[9]; } NativeWindow;
+typedef struct { DWORD words[12]; } NativeWindow;
 static NativeWindow map_window,unknown_window;
 """
 
@@ -37,13 +37,21 @@ stubs = bitmap.stubs.replace(
 )
 stubs += r"""
 static OwnerWindowState* owner_state_for(DWORD obj,int create) {
-    if(obj==(DWORD)(ULONG_PTR)&map_window) return fixture_state_for(1,create);
+    OwnerWindowState* st;
+    if(obj==(DWORD)(ULONG_PTR)&map_window) {
+        st=fixture_state_for(1,create);
+        if(st && create) {
+            st->object_ptr=obj;
+            st->vtable_ptr=*(DWORD*)(&map_window);
+        }
+        return st;
+    }
     return fixture_state_for(obj,create);
 }
 """
 
 production = bitmap.production + "\n" + "\n".join(bitmap.function(name) for name in (
-    "owner_bitmap_window_draw", "owner_map_draw_scoped", "owner_bitmap_queue_scoped",
+    "owner_bitmap_window_draw", "owner_map_note_occlusion", "owner_map_draw_scoped", "owner_bitmap_queue_scoped",
 ))
 helpers = bitmap.tests[:bitmap.tests.index("static void split_tiles(void)")]
 
@@ -53,6 +61,7 @@ typedef struct { void* verts; DWORD count; } Primitive;
 static Quad map_quads[5];
 static Primitive primitives[5];
 static DWORD queue_calls,map_calls,expected_map_native;
+static DWORD name_bitmap_calls;
 static void* expected_renderer;
 static Primitive* expected_primitive;
 static DWORD expected_flags;
@@ -90,14 +99,26 @@ static DWORD __attribute__((thiscall)) native_bitmap(void* dc,LONG x,LONG y,LONG
     submit(4,0x201);
     return 0x89abcdef;
 }
+static DWORD __attribute__((thiscall)) native_name_bitmap(void* dc,LONG x,LONG y,LONG w,LONG h,DWORD color) {
+    CHECK(dc==(void*)(ULONG_PTR)0x4567 && color==0xffabcdef);
+    CHECK(g_owner_bitmap_scope.object_ptr!=0 && g_owner_bitmap_scope.thread==current_thread);
+    ++name_bitmap_calls;
+    return 0x13572468;
+}
 static void map_reset(void) {
-    DWORD i,j;
+    DWORD i,j; OwnerWindowState* map_state;
     reset(); current_thread=17;
     memset(&map_window,0,sizeof(map_window)); memset(&unknown_window,0,sizeof(unknown_window));
     map_window.words[0x14/4]=1920; map_window.words[0x18/4]=1080;
+    map_window.words[0x28/4]=1;
     unknown_window.words[0x14/4]=100; unknown_window.words[0x18/4]=100;
-    strcpy(fixture_state_for(1,1)->class_name,"UIRoMapWnd");
-    queue_calls=map_calls=0; g_owner_map_draws=0;
+    if(!g_exe) { g_exe=calloc(1,0xab8000UL); CHECK(g_exe); g_exe_size=0xab8000UL; }
+    memset((BYTE*)g_exe+0xab76d8UL+0x3c4,0,4);
+    *(DWORD*)((BYTE*)g_exe+0xab76d8UL+0x3c4)=(DWORD)(ULONG_PTR)&map_window;
+    map_window.words[0]=(DWORD)(ULONG_PTR)((BYTE*)g_exe+PRM_MAP_VTABLE_RVA);
+    map_state=owner_state_for((DWORD)(ULONG_PTR)&map_window,1);
+    CHECK(map_state); strcpy(map_state->class_name,"UIRoMapWnd");
+    queue_calls=map_calls=name_bitmap_calls=0; g_owner_map_draws=0;
     g_owner_map_draw=native_map; g_owner_bitmap_submit=native_queue;
     /* Four direct overlays occupy different areas of the full-screen map. */
     quad(&map_quads[0],110,90,210,130);  /* hovered region shading */
@@ -140,6 +161,85 @@ static void shared_map_transform(void) {
         CHECK(g_ui_scaled_draws==(global?5:0));
         CHECK(!fallback_collected && !legacy_matches && !g_owner_bitmap_mismatched);
     }
+}
+static void map_occludes_world_name_bitmaps(void) {
+    const char* classes[]={"UINameBalloonText","UIVerticalNameBalloonText"};
+    DWORD i; OwnerWindowState* st;
+    for(i=0;i<2;++i) {
+        map_reset();
+        st=owner_state_for(3,1); CHECK(st); strcpy(st->class_name,classes[i]);
+        /* A name rendered before the map remains available underneath it. */
+        CHECK(owner_bitmap_draw_c(3,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+              600,300,120,24,0xffabcdef)==0x13572468);
+        CHECK(name_bitmap_calls==1 && !g_owner_map_occlusion.valid);
+        CHECK(owner_map_draw_scoped(&map_window)==0xcafef00d);
+        CHECK(g_owner_map_occlusion.valid && g_owner_map_occlusion.present==g_ui_present_serial+1);
+        /* The same exact class rendered after the actual fullscreen map draw
+           is suppressed before its original cached-bitmap callback. */
+        CHECK(owner_bitmap_draw_c(3,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+              600,300,120,24,0xffabcdef)==0);
+        CHECK(name_bitmap_calls==1 && g_owner_map_name_suppressed==1);
+    }
+
+    /* Closing/visibility changes, a present boundary, or object reuse all
+       revoke the marker before an unrelated name draw can consume it. */
+    map_reset(); st=owner_state_for(3,1); strcpy(st->class_name,classes[0]);
+    CHECK(owner_map_draw_scoped(&map_window)==0xcafef00d);
+    map_window.words[0x28/4]=0;
+    CHECK(owner_bitmap_draw_c(3,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+          600,300,120,24,0xffabcdef)==0x13572468);
+    CHECK(name_bitmap_calls==1);
+
+    map_reset(); st=owner_state_for(3,1); strcpy(st->class_name,classes[0]);
+    CHECK(owner_map_draw_scoped(&map_window)==0xcafef00d);
+    ++g_ui_present_serial;
+    CHECK(owner_bitmap_draw_c(3,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+          600,300,120,24,0xffabcdef)==0x13572468);
+    CHECK(name_bitmap_calls==1);
+
+    map_reset(); st=owner_state_for(3,1); strcpy(st->class_name,classes[0]);
+    CHECK(owner_map_draw_scoped(&map_window)==0xcafef00d);
+    map_window.words[0] ^= 4; /* same allocation, no longer the map vtable */
+    CHECK(owner_bitmap_draw_c(3,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+          600,300,120,24,0xffabcdef)==0x13572468);
+    CHECK(name_bitmap_calls==1);
+
+    /* Same-frame thread, geometry, singleton and runtime changes cannot
+       reuse an earlier fullscreen marker. */
+    for(i=0;i<5;++i) {
+        map_reset(); st=owner_state_for(3,1); strcpy(st->class_name,classes[0]);
+        CHECK(owner_map_draw_scoped(&map_window)==0xcafef00d);
+        if(i==0) current_thread=18;
+        if(i==1) map_window.words[0x14/4]=1024;
+        if(i==2) {
+            map_window.words[0x1c/4]=(DWORD)-1;
+            map_window.words[0x14/4]=1921; /* still fullscreen, but changed */
+        }
+        if(i==3) *(DWORD*)((BYTE*)g_exe+0xab76d8UL+0x3c4)=0;
+        if(i==4) g_ui_runtime_enabled=0;
+        CHECK(owner_bitmap_draw_c(3,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+              600,300,120,24,0xffabcdef)==0x13572468);
+        CHECK(name_bitmap_calls==1 && !g_owner_map_name_suppressed);
+    }
+
+    /* A different fullscreen UIWindow does not become a world-name
+       occluder. Scaling disabled also leaves the original render path alone. */
+    map_reset(); st=owner_state_for(2,1); strcpy(st->class_name,"UIItemWnd");
+    CHECK(owner_bitmap_draw_c(2,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+          0,0,1920,1080,0xffabcdef)==0x13572468);
+    CHECK(name_bitmap_calls==1 && !g_owner_map_name_suppressed);
+    map_reset(); g_ui_runtime_enabled=0; st=owner_state_for(3,1); strcpy(st->class_name,classes[0]);
+    CHECK(owner_map_draw_scoped(&map_window)==0xcafef00d);
+    CHECK(!g_owner_map_occlusion.valid);
+    CHECK(owner_bitmap_draw_c(3,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+          600,300,120,24,0xffabcdef)==0x13572468);
+    CHECK(name_bitmap_calls==1);
+    map_reset(); g_owner_map_draw=0; st=owner_state_for(3,1); strcpy(st->class_name,classes[0]);
+    CHECK(owner_map_draw_scoped(&map_window)==0);
+    CHECK(!g_owner_map_occlusion.valid);
+    CHECK(owner_bitmap_draw_c(3,(void*)(ULONG_PTR)0x4567,(void*)native_name_bitmap,
+          600,300,120,24,0xffabcdef)==0x13572468);
+    CHECK(name_bitmap_calls==1);
 }
 static DWORD __attribute__((thiscall)) native_unowned(void* self) {
     CHECK(self==&unknown_window);
@@ -196,8 +296,8 @@ static void disabled_map_render(void) {
 }
 int main(void) {
     CHECK(sizeof(void*)==4 && sizeof(Primitive)==8);
-    shared_map_transform(); scope_and_queue_isolation(); disabled_map_render();
-    puts("PASS map ownership: real 32-bit wrapper/queue ABI, shared bitmap/region/preview/route/marker transform, native-size policy, depth/RHW provenance, original vertices preserved, scope restoration, argument forwarding, wrong-thread and unowned isolation, disabled scaling");
+    shared_map_transform(); map_occludes_world_name_bitmaps(); scope_and_queue_isolation(); disabled_map_render();
+    puts("PASS map ownership: real 32-bit wrapper/queue ABI, shared bitmap/region/preview/route/marker transform, fullscreen map draw-order occlusion for both world-name classes, immediate close/present/reuse/runtime-disable/no-original isolation, native-size policy, depth/RHW provenance, original vertices preserved, scope restoration, argument forwarding, wrong-thread and unowned isolation, disabled scaling");
     return 0;
 }
 """

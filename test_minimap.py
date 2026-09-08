@@ -36,7 +36,7 @@ types = bitmap.struct_type("OwnerWindowState") + "\n" + source[
     source.index("#define MAX_OWNER_CAPTURE_LINKS")
 ]
 types += "\n" + "\n".join(constant(name) for name in (
-    "OWNER_BITMAP_PROBES", "PRM_OFFSCREEN_DP_RETURN_RVA",
+    "OWNER_BITMAP_PROBES", "PRM_MAP_VTABLE_RVA", "PRM_OFFSCREEN_DP_RETURN_RVA",
     "PRM_OFFSCREEN_DIP_RETURN_RVA", "PRM_MINIMAP_WINDOW_RVA",
 ))
 
