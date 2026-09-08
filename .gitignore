@@ -1,0 +1,26 @@
+# Generated build and test files
+*.obj
+*.o
+*.lib
+*.pdb
+__pycache__/
+*.py[cod]
+*.log
+
+# Keep only the tested project DLL in version control
+*.dll
+!/winmm.dll
+*.exe
+
+# Local development history and manual-test evidence
+/evidence/
+/releases/
+/COMPLETION.md
+/PRM-uifix GOAL.md
+/audit_phase2s.sh
+/audit_phase2t.sh
+/audit_phase2u.py
+/audit_phase2v.py
+/audit_phase2w.py
+/audit_phase2x.py
+/audit_phase2y.py
