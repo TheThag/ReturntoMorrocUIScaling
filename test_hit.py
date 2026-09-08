@@ -186,7 +186,7 @@ static OwnerHitScope g_owner_hit_scope;
 static OwnerTooltipBinding g_owner_tooltip_binding;
 static PFN_GetTickCount g_owner_tooltip_clock;
 static DWORD g_tooltip_tick;
-static void owner_tooltip_publish_refresh(DWORD,DWORD,const OwnerInputRegion*);
+static void owner_tooltip_publish_refresh(DWORD,DWORD,const OwnerInputRegion*,LONG,LONG);
 static int g_locked;
 static float g_scale;
 static DWORD g_thread_id;
@@ -486,7 +486,7 @@ static void publish_remap(POINT* p,OwnerHitSelection* hit) {
 }
 static void refresh_tooltip(const OwnerHitSelection* hit) {
     owner_tooltip_publish_refresh(native_ptr(OBJ_UNKNOWN),g_tooltip_tick,
-                                  hit && hit->valid?&hit->region:0);
+                                  hit && hit->valid?&hit->region:0,250,900);
     *(DWORD*)((BYTE*)&g_native[OBJ_UNKNOWN]+0x20)=g_tooltip_tick;
 }
 static DWORD query_at(LONG x,LONG y) {

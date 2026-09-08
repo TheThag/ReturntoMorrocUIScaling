@@ -163,7 +163,7 @@ static void controller_write_tick(DWORD tick) {
     *(DWORD*)(g_objects[ROOT_UNKNOWN].bytes+0x20)=tick;
 }
 static DWORD native_refresh(void) {
-    DWORD tick=owner_tooltip_refresh_c(object_ptr(ROOT_UNKNOWN));
+    DWORD tick=owner_tooltip_refresh_c(object_ptr(ROOT_UNKNOWN),250,450);
     controller_write_tick(tick);
     return tick;
 }
@@ -246,11 +246,30 @@ static void test_guards_and_world_speech(void) {
     g_ui_runtime_enabled=0; expect_unchanged(&popup);
     puts("PASS guards: +20 mismatch, world-speech identity, capture, and disabled refreshes fail closed");
 }
+static void test_requested_origin_lifetime(void) {
+    OwnerWindowState popup; float dx=0.0f,dy=0.0f;
+    setup(); add_region(ROOT_A,0,1000,2.0f,7.0f,-3.0f);
+    popup_state(&popup,popup_ptr(g_popup_a),"UITransBalloonText");
+    CHECK(owner_tooltip_refresh_c(object_ptr(ROOT_UNKNOWN),1800,450)==400);
+    controller_write_tick(400);
+    /* Different requests can produce the same cache origin at the native
+       screen edge. A refresh must replace the request even at the same tick. */
+    owner_popup_offset(&popup,1743,450,&dx,&dy);
+    CHECK(fabsf(dx-1864.0f)<0.001f && fabsf(dy+553.0f)<0.001f);
+    CHECK(owner_tooltip_refresh_c(object_ptr(ROOT_UNKNOWN),1900,470)==400);
+    memset(&g_owner_hit_selection,0,sizeof(g_owner_hit_selection));
+    g_owner_input_region_count=0;
+    owner_popup_offset(&popup,1743,450,&dx,&dy);
+    CHECK(fabsf(dx-2064.0f)<0.001f && fabsf(dy+513.0f)<0.001f);
+    CHECK(g_clock_calls==2);
+    puts("PASS requested origin: same-tick updates replace clamped requests and retain them after pointer exit");
+}
 int main(void) {
     CHECK(sizeof(void*)==4);
     test_refresh_and_leave_reentry();
     test_unrelated_and_new_popup();
     test_guards_and_world_speech();
+    test_requested_origin_lifetime();
     puts("PASS generic tooltip lifetime harness: 32-bit ASan/UBSan");
     return 0;
 }

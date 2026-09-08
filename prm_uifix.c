@@ -1,5 +1,5 @@
 /*
- * PRM UI FIX - Phase 3E tooltip lifetime, window hover and chat background ownership
+ * PRM UI FIX - Phase 3F tooltip placement before native screen clipping
  * 32-bit WINMM proxy for Return to Morroc PRM.exe
  *
  * Goals for Phase 2F:
@@ -115,6 +115,7 @@ typedef struct _LOGFONTA {
 #define PRM_MINIMAP_MARKER_QUEUE_CALL_RVA 0x003325C4UL
 #define PRM_MINIMAP_MARKER_QUEUE_TARGET_RVA 0x000A0550UL
 #define PRM_TOOLTIP_MANAGER_RVA 0x00A78D8CUL
+#define PRM_TOOLTIP_FACTORY_RVA 0x00228430UL
 #define PRM_TOOLTIP_REFRESH_RVA 0x002284A2UL
 #define PRM_TOOLTIP_CLOCK_IAT_RVA 0x0090754CUL
 #define PRM_RECT_QUEUE_CALL_RVA    0x0009277FUL
@@ -962,7 +963,7 @@ static void install_device_hooks(void* obj) {
     e=patch_vtable_slot(vt,31,(void*)hook_DrawPrimitiveVB,&r->orig_draw_vb);
     f=patch_vtable_slot(vt,32,(void*)hook_DrawIndexedPrimitiveVB,&r->orig_draw_indexed_vb);
     g=patch_vtable_slot(vt,35,(void*)hook_SetTexture,&r->orig_set_texture);
-    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 3E owner UI + isolated world input)");
+    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (Phase 3F owner UI + isolated world input)");
     else log_line("Direct3DDevice7 hooks: PARTIAL/FAILED");
 }
 
@@ -2279,6 +2280,7 @@ static DWORD owner_native_capture(void);
 typedef struct {
     DWORD controller;
     DWORD refresh_tick;
+    LONG requested_x,requested_y;
     OwnerInputRegion source;
     int have_source;
 } OwnerTooltipBinding;
@@ -2294,10 +2296,11 @@ static int owner_tooltip_controller_is_current(DWORD controller) {
 }
 
 static void owner_tooltip_publish_refresh(DWORD controller, DWORD tick,
-                                           const OwnerInputRegion* source) {
+                                           const OwnerInputRegion* source,LONG x,LONG y) {
     owner_input_region_lock();
     g_owner_tooltip_binding.controller=controller;
     g_owner_tooltip_binding.refresh_tick=tick;
+    g_owner_tooltip_binding.requested_x=x; g_owner_tooltip_binding.requested_y=y;
     if(source && source->object_ptr && !source->native_size) {
         g_owner_tooltip_binding.source=*source;
         g_owner_tooltip_binding.have_source=1;
@@ -2311,7 +2314,7 @@ static void owner_tooltip_publish_refresh(DWORD controller, DWORD tick,
 /* Called by the six-byte thunk replacing only VA 6284A2's timeGetTime call.
  * Preserve the native clock result and refresh source provenance once for
  * every factory call, including repeated calls within one clock tick. */
-DWORD WINAPI owner_tooltip_refresh_c(DWORD controller) {
+DWORD WINAPI owner_tooltip_refresh_c(DWORD controller,LONG x,LONG y) {
     DWORD tick=0; OwnerHitSelection hit={0}; OwnerInputRegion current={0};
     DWORD thread=0; int valid=0;
     if(g_owner_tooltip_clock) tick=g_owner_tooltip_clock();
@@ -2327,7 +2330,7 @@ DWORD WINAPI owner_tooltip_refresh_c(DWORD controller) {
            current.vtable_ptr==hit.region.vtable_ptr && !current.native_size)
             valid=1;
     }
-    owner_tooltip_publish_refresh(controller,tick,valid?&current:0);
+    owner_tooltip_publish_refresh(controller,tick,valid?&current:0,x,y);
     return tick;
 }
 
@@ -2396,8 +2399,13 @@ static void owner_popup_offset(OwnerWindowState* st,LONG x,LONG y,float* dx,floa
            *(DWORD*)((BYTE*)(ULONG_PTR)binding.controller+0x20)!=binding.refresh_tick) return;
         source=binding.source;
         s=source.fit_scale>0.0f?source.fit_scale:ui_scale_factor();
-        *dx=source.ax+((float)x-source.ax)*s+source.offset_x-(float)x;
-        *dy=source.ay+((float)y-source.ay)*s+source.offset_y-(float)y;
+        /* Native VA 628560..5AE clamps the requested origin before SetPos.
+         * A fitted source can legitimately remain outside the native screen
+         * (for example the connected Alt+V menu). Transform its requested
+         * origin before fitting the enlarged popup, while compensating for
+         * the actual clamped position of the cached pixels. */
+        *dx=source.ax+((float)binding.requested_x-source.ax)*s+source.offset_x-(float)x;
+        *dy=source.ay+((float)binding.requested_y-source.ay)*s+source.offset_y-(float)y;
         return;
     }
     owner_input_region_lock(); hit=g_owner_hit_selection; owner_input_region_unlock();
@@ -2420,14 +2428,17 @@ static void owner_popup_offset(OwnerWindowState* st,LONG x,LONG y,float* dx,floa
 /* Record a bounded sample at appearance, including reentry after a popup was
  * absent. A later F8 snapshot alone cannot show the first displayed frame. */
 static void owner_popup_trace_first(OwnerWindowState* st) {
-    static DWORD samples; OwnerHitSelection hit; DWORD bound_source=0; char line[512];
+    static DWORD samples; OwnerHitSelection hit; DWORD bound_source=0; LONG requested_x=0,requested_y=0; char line[512];
     if(samples>=24 || !st || !owner_class_is_hover_popup(st->class_name) ||
        (st->bitmap_present && g_ui_present_serial+1-st->bitmap_present<=1)) return;
     ++samples;
     owner_input_region_lock(); hit=g_owner_hit_selection;
-    if(g_owner_tooltip_binding.have_source) bound_source=g_owner_tooltip_binding.source.object_ptr;
+    if(g_owner_tooltip_binding.have_source) {
+        bound_source=g_owner_tooltip_binding.source.object_ptr;
+        requested_x=g_owner_tooltip_binding.requested_x; requested_y=g_owner_tooltip_binding.requested_y;
+    }
     owner_input_region_unlock();
-    if(!owner_is_transient_tooltip(st->object_ptr)) bound_source=0;
+    if(!owner_is_transient_tooltip(st->object_ptr)) { bound_source=0; requested_x=requested_y=0; }
     line[0]=0; s_append(line,sizeof(line),"OwnerPopup first present=");
     s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," obj="); s_append_hex8(line,sizeof(line),st->object_ptr);
@@ -2443,6 +2454,8 @@ static void owner_popup_trace_first(OwnerWindowState* st) {
     s_append(line,sizeof(line)," hitValid="); s_append_uint(line,sizeof(line),(DWORD)hit.valid);
     s_append(line,sizeof(line)," source="); s_append_hex8(line,sizeof(line),hit.region.object_ptr);
     s_append(line,sizeof(line)," boundSource="); s_append_hex8(line,sizeof(line),bound_source);
+    s_append(line,sizeof(line)," requested="); s_append_int(line,sizeof(line),requested_x);
+    s_append(line,sizeof(line),","); s_append_int(line,sizeof(line),requested_y);
     s_append(line,sizeof(line)," offset="); s_append_int(line,sizeof(line),(LONG)st->offset_x);
     s_append(line,sizeof(line),","); s_append_int(line,sizeof(line),(LONG)st->offset_y);
     s_append(line,sizeof(line)," owners="); s_append_uint(line,sizeof(line),g_owner_window_count);
@@ -2712,11 +2725,13 @@ static int owner_background_call_valid(void) {
     return 1;
 }
 static int owner_tooltip_refresh_span_valid(void) {
-    BYTE* p;
+    BYTE* p; BYTE* frame;
     if(!g_exe || g_exe_size<PRM_TOOLTIP_REFRESH_RVA+9 ||
        g_exe_size<PRM_TOOLTIP_CLOCK_IAT_RVA+4) return 0;
     p=(BYTE*)g_exe+PRM_TOOLTIP_REFRESH_RVA;
-    return p[0]==0xff && p[1]==0x15 &&
+    frame=(BYTE*)g_exe+PRM_TOOLTIP_FACTORY_RVA;
+    return frame[0]==0x55 && frame[1]==0x8b && frame[2]==0xec &&
+        p[0]==0xff && p[1]==0x15 &&
         *(DWORD*)(p+2)==(DWORD)(ULONG_PTR)((BYTE*)g_exe+PRM_TOOLTIP_CLOCK_IAT_RVA) &&
         p[6]==0x89 && p[7]==0x47 && p[8]==0x20 &&
         *(DWORD*)((BYTE*)g_exe+PRM_TOOLTIP_CLOCK_IAT_RVA)!=0;
@@ -3541,7 +3556,7 @@ static void maybe_dump_owner_windows(void) {
     static OwnerInputRegion active[64];
     if(!g_owner_submit_enabled) return;
     if(!g_GetAsyncKeyState) return; k=g_GetAsyncKeyState(VK_OWNER_DIAGNOSTICS); if(!(k&1)) return;
-    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 3E present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 3F present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
     s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
     s_append(line,sizeof(line)," ownerMouse="); s_append_uint(line,sizeof(line),g_owner_mapped_mouse);
@@ -4242,7 +4257,7 @@ static void ui_present_boundary(const char* method) {
         log_line(line);
     }
     if(g_owner_submit_enabled && g_ui_present_serial>0 && (g_ui_present_serial%1200UL)==0) {
-        line[0]=0; s_append(line,sizeof(line),"3E heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+        line[0]=0; s_append(line,sizeof(line),"3F heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
         s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
         s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
@@ -4754,7 +4769,7 @@ static void install_phase2_hooks(void) {
     if(!g_exe) return;
     ok=patch_import(g_exe,"DDRAW.dll","DirectDrawCreateEx",(void*)hook_DirectDrawCreateEx,(void**)&g_real_DirectDrawCreateEx);
     log_line(ok ? "DirectDrawCreateEx IAT hook: OK" : "DirectDrawCreateEx IAT hook: NOT FOUND");
-    if(ok) log_line("Phase 3E renderer armed: all-window owner UI + isolated world input");
+    if(ok) log_line("Phase 3F renderer armed: all-window owner UI + isolated world input");
 }
 
 /* ---------- real WINMM ---------- */
@@ -4788,7 +4803,7 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Phase 3E Tooltip Lifetime, Window Hover and Chat Background Ownership ===");
+    log_line("=== PRM UI FIX Phase 3F Tooltip Placement Before Native Screen Clipping ===");
     log_line("Proxy DLL loaded");
     if (g_GetPrivateProfileIntA) {
         g_font_enabled = (int)g_GetPrivateProfileIntA("Font", "Enabled", 1, g_ini_path);
@@ -4939,7 +4954,7 @@ static void initialize_mod(void) {
     owner_submit_install_hooks();
     vtrace_install_submit_hooks();
     vtrace_install_active_vtables();
-    log_line("Phase 3E armed: F2 settings; F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
+    log_line("Phase 3F armed: F2 settings; F3 UI filtering; F4 trace; F5 UI scale; F6 owner+2F mouse remap; F7 HUD groups; F8 diagnostics; F9 world input");
     log_line("Initialization complete");
 }
 

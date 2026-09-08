@@ -98,6 +98,9 @@ CONNECTED_LAYOUT = (
 # Exact popup constructors and registration, including the classes that have
 # no Wnd/Window suffix. These are evidence spans, not additional hooks.
 POPUP_LAYOUT = (
+    (0x00228430, bytes.fromhex("55 8b ec")),  # Factory frame for original x/y arguments
+    (0x0022856A, bytes.fromhex("39 4d 0c 0f 4d 4d 0c")),  # x: EBP+0C before native clamp
+    (0x0022858B, bytes.fromhex("39 5d 10 8b cf 0f 4d 5d 10")),  # y: EBP+10
     # UITransBalloonText +18 returns a separate background rectangle; the
     # manager pushes x/y/width/height/color before the scoped cdecl call.
     (0x000E42A3, bytes.fromhex("0f 10 81 a0 00 00 00 8b 55 08 0f 11 02")),
@@ -222,6 +225,8 @@ def main():
             raise ValueError("Tooltip source controller: source RVA differs")
         if source_constant(source, "PRM_TOOLTIP_CLOCK_IAT_RVA") != 0x0090754C:
             raise ValueError("Tooltip factory clock IAT: source RVA differs")
+        if source_constant(source, "PRM_TOOLTIP_FACTORY_RVA") != 0x00228430:
+            raise ValueError("Tooltip factory frame: source RVA differs")
         print("Tooltip controller: native reference and source RVA match")
     except ValueError as error:
         failures.append(str(error))

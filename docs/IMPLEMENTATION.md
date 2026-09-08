@@ -124,6 +124,14 @@ The expiry routine at 6286A0 can leave the popup visible for 100ms after the
 pointer leaves. During that interval its source remains the last factory's
 source, even when the pointer moves over another window. A new factory update
 replaces that binding, including two updates in the same clock tick.
+Phase 3F also captures the original x/y arguments from factory EBP+0C/+10.
+Native 628560..5AE clamps those arguments into [-3, viewport-size+3] before
+SetPos. That clamp can detach a tooltip from a window whose native coordinates
+are offscreen while its fitted display is visible. The bitmap origin now moves
+to `sourceTransform(requestedOrigin)` using an offset relative to its actual
+clamped cache origin. The existing popup fit then keeps the enlarged result on
+screen. Native position writes, text layout, cache contents, and clock return
+remain unchanged. The clock bridge forwards three stdcall arguments (12 bytes).
 The character-info popup still matches its selected source root's +19C8 field.
 The inactive character-info position (-400,-400) remains hidden.
 

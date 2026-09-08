@@ -322,11 +322,14 @@ _owner_background_thunk:
   ret
 
 /* Nonempty tooltip updates call the clock with EDI holding their controller.
+ * EBP is the factory frame; preserve its x/y request before native clipping.
  * The bridge returns that same clock value for the native +20 timestamp. */
 .globl _owner_tooltip_refresh_thunk
 _owner_tooltip_refresh_thunk:
+  pushl 0x10(%ebp)
+  pushl 0x0c(%ebp)
   pushl %edi
-  call _owner_tooltip_refresh_c@4
+  call _owner_tooltip_refresh_c@12
   ret
 
 /* Root update callback +40 polls mouse globals independently of hit queries.

@@ -13,7 +13,7 @@ production = (root / 'vtrace_thunks.S').read_text().split('/* Phase 2V:', 1)[1]
 production = production[production.index('.globl _owner_bitmap_primary_thunk'):]
 production = production.replace('_owner_bitmap_draw_c@32', 'bitmap_draw_stub')
 production = production.replace('_owner_background_draw_c@24', 'background_draw_stub')
-production = production.replace('_owner_tooltip_refresh_c@4', 'tooltip_refresh_stub')
+production = production.replace('_owner_tooltip_refresh_c@12', 'tooltip_refresh_stub')
 production = production.replace('_owner_window_update_c@4', 'window_update_stub')
 harness = r'''
 .text
@@ -67,6 +67,8 @@ alternate_continue:
     jne fail
     cmpl $1, background_calls
     jne fail
+    movl $-68, 0x0c(%ebp)
+    movl $1615, 0x10(%ebp)
     call _owner_tooltip_refresh_thunk
     call check_state
     cmpl $1, tooltip_calls
@@ -144,9 +146,13 @@ background_draw_stub:
 tooltip_refresh_stub:
     cmpl $window_object, 4(%esp)
     jne fail
+    cmpl $-68, 8(%esp)
+    jne fail
+    cmpl $1615, 12(%esp)
+    jne fail
     incl tooltip_calls
     movl $0x11223344, %eax
-    ret $4
+    ret $12
 window_update_stub:
     cmpl $window_object, 4(%esp)
     jne fail
@@ -200,4 +206,4 @@ with tempfile.TemporaryDirectory(prefix='prm-thunks-') as tmp:
     subprocess.run(['clang', '-target', 'i386-linux-gnu', '-c', str(folder / 'thunks.S'), '-o', str(folder / 'thunks.o')], check=True)
     subprocess.run(['ld.lld', '-m', 'elf_i386', '-e', '_start', str(folder / 'thunks.o'), '-o', str(folder / 'thunks')], check=True)
     subprocess.run([str(folder / 'thunks')], check=True)
-print('PASS actual bitmap/background/tooltip/update thunks: i386 forwarding, native ret20, wrapper ret32/24/4, cdecl cleanup, stack/register restoration, list advancement and continuations')
+print('PASS actual bitmap/background/tooltip/update thunks: i386 forwarding, native ret20, wrapper ret32/24/12/4, requested tooltip origin, cdecl cleanup, stack/register restoration, list advancement and continuations')

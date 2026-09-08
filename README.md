@@ -3,7 +3,7 @@
 A 32-bit WinMM proxy that enlarges Return to Morroc's interface while keeping
 window contents, mouse interaction and character movement aligned.
 
-The current test build is **Phase 3E**. It includes complete-window scaling, topmost
+The current test build is **Phase 3F**. It includes complete-window scaling, topmost
 window input, dragging, attached NPC descriptions, player chat-room titles,
 character hover names, fullscreen map region previews and the compact minimap.
 The game executable is left unchanged on disk.
@@ -70,10 +70,16 @@ alternate background callback also receives window ownership, keeping the chat
 background and contents together while resizing. Both callbacks apply to any
 tracked window using those native paths, without a chat/hotbar class check.
 
+The user confirmed those Phase 3E fixes. Phase 3F addresses tooltips on the
+Alt+V menu when its native position lies outside the screen but its scaled
+position is visible. The tooltip's requested position now passes through its
+source transform before screen fitting, preventing native clipping from pulling
+it away from the visible buttons. This applies to ordinary tooltips from any
+owned window. In-game confirmation of this placement change is pending.
+
 Inactive owner records remain reclaimable. First-appearance diagnostics include
-the tooltip's retained source and position adjustment. In-game confirmation of
-the three Phase 3E changes is pending on `fix/tooltip-entry-and-buff-placement`;
-published `main` remains Phase 2Z.
+the tooltip's retained source, requested position and final position adjustment.
+The working branch is `fix/tooltip-entry-and-buff-placement`.
 
 ## Compatibility
 

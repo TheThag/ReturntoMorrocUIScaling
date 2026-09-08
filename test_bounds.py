@@ -186,6 +186,8 @@ static void reset_all(void) {
     g_transient_tooltip_object=1;
     g_owner_tooltip_binding.controller=(DWORD)(ULONG_PTR)g_tooltip_controller;
     g_owner_tooltip_binding.refresh_tick=400;
+    g_owner_tooltip_binding.requested_x=120;
+    g_owner_tooltip_binding.requested_y=80;
     g_owner_tooltip_binding.have_source=1;
     g_owner_tooltip_binding.source.object_ptr=1;
     g_owner_tooltip_binding.source.fit_scale=1.0f;
@@ -249,6 +251,10 @@ static void publish_region(unsigned int index,OwnerWindowState* st,int native_si
     if(g_owner_input_region_count<=index) g_owner_input_region_count=index+1;
 }
 static void assert_close(float a,float b,float epsilon) { CHECK(fabsf(a-b)<=epsilon); }
+static void tooltip_factory_request(LONG x,LONG y) {
+    g_owner_tooltip_binding.requested_x=x;
+    g_owner_tooltip_binding.requested_y=y;
+}
 static void assert_inside(const UIRectF* r) {
     assert_close(r->l, fmaxf(0.0f,r->l), 0.01f);
     assert_close(r->t, fmaxf(0.0f,r->t), 0.01f);
@@ -421,6 +427,7 @@ static void test_first_hover_popup(void) {
             LONG x=visit==1?1800:400+visit*100,y=visit==1?1000:300;
             /* No previous frame, group match, or warm-up is available. Reuse
                the same popup after another control changed its position. */
+            tooltip_factory_request(x,y);
             CHECK(owner_bitmap_prepare(1,x,y,180,40)); scope=g_owner_bitmap_scope;
             CHECK(scope.object_ptr==1 && scope.ax==x && scope.ay==y);
             CHECK(!st->last_input_order);
@@ -451,6 +458,7 @@ static void test_first_hover_popup(void) {
        creating/reusing the transient popup. */
     g_owner_tooltip_binding.source=g_owner_input_regions[0];
     g_owner_tooltip_binding.have_source=1;
+    tooltip_factory_request(120,80);
     st=window(1,"UITransBalloonText");
     CHECK(owner_bitmap_prepare(1,120,80,180,40)); scope=g_owner_bitmap_scope;
     quad(&q,120,80,180,40); owner_bitmap_note_vertices(&q,4,&scope);
@@ -468,6 +476,70 @@ static void test_first_hover_popup(void) {
     assert_close((out.f[0][0]+out.f[1][0])*0.5f,770,0.01f);
     assert_close(out.f[2][1],530,0.01f);
     puts("PASS popups: exact transient/character-info classes scale on first draw and revisit, fit at edges, and never claim input");
+}
+
+static void test_native_clamp_preserves_requested_origin(void) {
+    OwnerWindowState* st; OwnerInputRegion* source; UIRectF display;
+    OwnerBitmapScope scope; Quad q,out;
+    float dx=0.0f,dy=0.0f;
+    reset_all(); g_ui_screen_w=3440; g_ui_screen_h=1440; g_ui_scale_percent=200;
+    st=window(1,"UITransBalloonText");
+    source=&g_owner_tooltip_binding.source;
+    *source=(OwnerInputRegion){0};
+    source->rect=(UIRectF){-74,1608,146,1805};
+    source->ax=0.0f; source->ay=1440.0f; source->fit_scale=2.0f;
+    source->offset_x=244.0f; source->offset_y=-938.0f; source->object_ptr=1;
+    g_owner_tooltip_binding.have_source=1;
+    g_owner_tooltip_binding.requested_x=-68;
+    g_owner_tooltip_binding.requested_y=1615;
+    *(DWORD*)(g_tooltip_controller+0x20)=g_owner_tooltip_binding.refresh_tick;
+    owner_input_region_bounds(source,&display);
+    assert_close(display.l,96.0f,0.01f); assert_close(display.t,838.0f,0.01f);
+    assert_close(display.r,536.0f,0.01f); assert_close(display.b,1232.0f,0.01f);
+    /* Native 628560..5AE has already clamped the cached popup origin to
+       (-3,1422). The requested origin must still be transformed from the
+       source snapshot, then compensated against that cached native origin. */
+    owner_popup_offset(st,-3,1422,&dx,&dy);
+    assert_close(-3.0f+dx,108.0f,0.01f);
+    /* With the supplied exact fields, 1440+(1615-1440)*2-938 = 852. */
+    assert_close(1422.0f+dy,852.0f,0.01f);
+    CHECK(owner_bitmap_prepare(1,-3,1422,70,21)); scope=g_owner_bitmap_scope;
+    quad(&q,-3,1422,70,21); owner_bitmap_note_vertices(&q,4,&scope);
+    CHECK(make_scaled_ui_vertices(5,0x1c4,&q,4,out.bytes,sizeof(out),0,0)==&out);
+    assert_close(out.f[0][0],108.0f,0.01f); assert_close(out.f[0][1],852.0f,0.01f);
+    assert_close(out.f[1][0]-out.f[0][0],140.0f,0.01f);
+    assert_close(out.f[2][1]-out.f[0][1],42.0f,0.01f);
+    puts("PASS popup clamp: Alt+V requested origin survives native (-3,1422) clipping through queued bitmap rendering at (108,852)");
+}
+
+static void test_native_clamp_then_scaled_fit(void) {
+    const int percentages[]={133,150,200};
+    const LONG requests[][2]={{-20,120},{1900,120},{120,-20},{120,1090},{120,120}};
+    const float desired[][2]={{-10,240},{1900,240},{240,-10},{240,1060},{240,240}};
+    unsigned int i,j;
+    for(j=0;j<3;++j) for(i=0;i<5;++i) {
+        LONG x=requests[i][0],y=requests[i][1]; float scale,expect_x,expect_y;
+        OwnerInputRegion* source; OwnerBitmapScope scope; Quad q,out;
+        reset_all(); g_ui_scale_percent=percentages[j]; scale=ui_scale_factor();
+        window(1,"UITransBalloonText"); source=&g_owner_tooltip_binding.source;
+        source->ax=source->ay=0.0f; source->fit_scale=scale;
+        source->offset_x=desired[i][0]-(float)x*scale;
+        source->offset_y=desired[i][1]-(float)y*scale;
+        tooltip_factory_request(x,y);
+        /* Model the verified native factory clipping before our code sees
+           the bitmap. The oracle below is the desired displayed location. */
+        if(x<-3) x=-3; if(x>1920-180+3) x=1920-180+3;
+        if(y<-3) y=-3; if(y>1080-40+3) y=1080-40+3;
+        CHECK(owner_bitmap_prepare(1,x,y,180,40)); scope=g_owner_bitmap_scope;
+        quad(&q,x,y,180,40); owner_bitmap_note_vertices(&q,4,&scope);
+        CHECK(make_scaled_ui_vertices(5,0x1c4,&q,4,out.bytes,sizeof(out),0,0)==&out);
+        expect_x=i==0?0.0f:(i==1?1920.0f-180.0f*scale:desired[i][0]);
+        expect_y=i==2?0.0f:(i==3?1080.0f-40.0f*scale:desired[i][1]);
+        assert_close(out.f[0][0],expect_x,0.01f); assert_close(out.f[0][1],expect_y,0.01f);
+        assert_close(out.f[1][0]-out.f[0][0],180.0f*scale,0.01f);
+        assert_close(out.f[2][1]-out.f[0][1],40.0f*scale,0.01f);
+    }
+    puts("PASS popup fit: all four native clamps and an unclipped origin render correctly at 133/150/200% before final screen fitting");
 }
 
 static void test_moving_player_gauge(void) {
@@ -499,6 +571,8 @@ int main(void) {
     test_oversized_toggles_and_exclusions();
     test_independent_roots();
     test_first_hover_popup();
+    test_native_clamp_preserves_requested_origin();
+    test_native_clamp_then_scaled_fit();
     test_moving_player_gauge();
     return 0;
 }
