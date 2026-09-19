@@ -240,9 +240,13 @@ the manager advances to another window. Capture, disabled input, stale samples
 and unknown roots retain native forwarding. This policy has no class-name test.
 
 UITransBalloonText also carries actor speech at 719D11..9E14. Those other
-instances receive a live bottom-center attachment and no source-window
+instances receive a live top-center attachment and no source-window
 translation or screen fitting. Hovering an unrelated control therefore cannot
 pull world speech away from its actor. All these text popups remain passive.
+Native placement at 719DDE..9E14 and 862121..2161 subtracts half the text
+width from projected X and a fixed scaled offset from projected Y, without
+subtracting text height. The top edge must therefore stay fixed as text
+enlarges. Chat-room titles retain their separate bottom-pointer attachment.
 
 UIPlayerGage (constructor 4F8320, vtable D3418C, renderer 512F90) is distinct
 from the UIBarGraphPlayer controls inside normal HUD windows. The world UI
@@ -251,6 +255,27 @@ at 742788..280B reads the actor projection +AC/+B0, centers the 60-pixel bar
 at projection X and applies a signed vertical offset. The final bitmap now
 scales around its current integer center, without screen fitting or input
 ownership. No actor projection or name-placement code is patched. The user confirmed both the health bar and name placement in-game.
+
+## Other actors' health and cast bars
+
+`UIPcGage`, `UIMonsterGage`, and `UIRechargeGage` also lack the Wnd/Window
+suffix and do not derive from UIFrameWnd. Their manager-owned bitmaps now use
+the same live-center policy as the player's gauge. Each draw captures the
+current native integer center, shared by all queued tiles. These passive
+windows neither publish input regions nor enter mouse-capture traversal, and
+screen fitting does not pull them away from actors at the viewport edge.
+
+The native constructors use vtables D340C8, D34250, and D34004 respectively.
+The actor paths store player gauges at +400/+448/+460, monster gauges at +2FC,
+and cast gauges at +26C. Their positioning reads projected actor +AC/+B0 before
+calling SetPos; all register through UIWindowMgr's 5F4DD0. The evidence is
+checked by `verify_hooks.py`; no new executable hook is needed.
+
+UIPcGage is also used inside UIDragMiniPartyWnd and UIMiniPartyInfoWnd. Those
+constructors call B1B6F0, which assigns the child's parent at +10. Admission
+rejects these child instances so their pixels retain the party window's
+complete-bitmap transform. The base UIGage and unrelated bitmap controls
+remain excluded from independent ownership.
 
 ## Compact minimap
 

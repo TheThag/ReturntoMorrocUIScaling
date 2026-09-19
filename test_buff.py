@@ -85,10 +85,10 @@ static void buff_box_and_text(void) {
         CHECK(owner_bitmap_prepare(expected_owner,expected_x,expected_y,146,106));
         CHECK(g_owner_bitmap_scope.fit_scale==scale && !g_owner_bitmap_scope.native_size);
         /* The shared RTTI on an unrelated speech object still uses its live
-           world bottom-center, even while the buff popup is active. */
+           world top-center, even while the buff popup is active. */
         st=owner_state_for((DWORD)(ULONG_PTR)&second_window,1); strcpy(st->class_name,"UITransBalloonText");
         CHECK(owner_bitmap_prepare(st->object_ptr,700,500,146,106));
-        CHECK(g_owner_bitmap_scope.ax==773 && g_owner_bitmap_scope.ay==606);
+        CHECK(g_owner_bitmap_scope.ax==773 && g_owner_bitmap_scope.ay==500);
         CHECK(g_owner_bitmap_scope.offset_x==0 && g_owner_bitmap_scope.offset_y==0);
     }
 }
@@ -111,7 +111,7 @@ static void oversized_and_live_scale(void) {
 int main(void) {
     CHECK(sizeof(void*)==4);
     background_baseline(); exact_identity(); buff_box_and_text(); oversized_and_live_scale();
-    puts("PASS buff: native thiscall/return forwarding, live scene+5E8 and vtable identity, unreadable/reused rejection, first/reentry 150/200% queued box/text attachment, and unchanged actor speech");
+    puts("PASS buff: native thiscall/return forwarding, live scene+5E8 and vtable identity, unreadable/reused rejection, first/reentry 150/200% queued box/text attachment, and separate actor-text top attachment");
     return 0;
 }
 '''

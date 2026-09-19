@@ -346,7 +346,7 @@ static void test_anonymous_message_families(void) {
 static void test_balloon_and_explicit_families(void) {
     const char *special[]={
         "UITransBalloonText", "UICharInfoBalloonText", "CSignBoardWnd",
-        "UIPlayerGage", "UIChatRoomTitle", "UINameBalloonText",
+        "UIPlayerGage", "UIPcGage", "UIMonsterGage", "UIRechargeGage", "UIChatRoomTitle", "UINameBalloonText",
         "UIVerticalNameBalloonText"
     };
     unsigned int i;
@@ -383,7 +383,7 @@ static void test_balloon_and_explicit_families(void) {
     }
     {
         static const char *excluded[]={
-            "CBmpObjWnd", "UIPcGage", "UIMonsterGage", "UIMerchantShopTitle"
+            "CBmpObjWnd", "UIBarGraphPlayer", "UIMerchantShopTitle", "UIGage", "UIColorTransBalloonText"
         };
         for (i=0; i<sizeof(excluded)/sizeof(excluded[0]); ++i) {
             RttiCase c=build_case(24+i,excluded[i],3);
@@ -392,6 +392,27 @@ static void test_balloon_and_explicit_families(void) {
             CHECK(!owner_object_should_hook(c.object,excluded[i]));
             CHECK(!owner_state_for(c.object,1));
         }
+    }
+    {
+        /* Native party panels insert UIPcGage children with parent at +10.
+           They must keep the panel's complete-bitmap transform, despite
+           sharing a class with independently registered actor gauges. */
+        RttiCase c=build_case(30,"UIPcGage",3);
+        DWORD parent=ptr32(&objects[31]);
+        memcpy((BYTE*)(ULONG_PTR)c.object+0x10,&parent,sizeof(parent));
+        CHECK(owner_class_is_world_label("UIPcGage"));
+        CHECK(!owner_object_should_hook(c.object,"UIPcGage"));
+        CHECK(!owner_state_for(c.object,1));
+        parent=0;
+        memcpy((BYTE*)(ULONG_PTR)c.object+0x10,&parent,sizeof(parent));
+        CHECK(owner_object_should_hook(c.object,"UIPcGage"));
+        CHECK(owner_state_for(c.object,1)!=0);
+        /* Same-address, same-vtable reuse must not preserve world ownership
+           after the native client inserts this gauge into a party panel. */
+        parent=ptr32(&objects[31]);
+        memcpy((BYTE*)(ULONG_PTR)c.object+0x10,&parent,sizeof(parent));
+        CHECK(!owner_state_for(c.object,0));
+        CHECK(!owner_state_for(c.object,1));
     }
     {
         RttiCase c=build_case(20,"UnrelatedLeaf",0);

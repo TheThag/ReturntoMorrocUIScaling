@@ -335,6 +335,12 @@ static void test_snapshot_wrap_and_filters(void) {
     state_root(1,0,"CSignBoardWnd",100,1);
     state_root(2,0,"UINameBalloonText",100,1);
     state_root(3,0,"UIVerticalNameBalloonText",100,1);
+    state_root(4,0,"UIPcGage",100,1);
+    state_root(5,0,"UIMonsterGage",100,1);
+    state_root(6,0,"UIRechargeGage",100,1);
+    assert(owner_class_is_world_label("UIPcGage"));
+    assert(owner_class_is_world_label("UIMonsterGage"));
+    assert(owner_class_is_world_label("UIRechargeGage"));
     owner_capture_build_snapshot();
     assert(g_owner_capture_build_count==0 && g_owner_capture_link_peak==0);
     assert(g_owner_capture_stale_roots==0);
@@ -345,7 +351,7 @@ static void test_snapshot_wrap_and_filters(void) {
     state_root(0,0,"UIItemWnd",100,1);
     owner_capture_build_snapshot();
     assert(g_owner_capture_build_count==2 && g_owner_capture_link_peak==2);
-    puts("PASS: unsigned present wraparound works; disabled hooks and popup/NPC/hover-name roots are skipped");
+    puts("PASS: unsigned present wraparound works; disabled hooks and popup/NPC/hover-name/world-gauge roots are skipped");
 }
 '''
 

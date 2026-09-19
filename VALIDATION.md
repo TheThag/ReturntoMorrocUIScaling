@@ -1,4 +1,33 @@
-# UI FIX 1.0 validation
+# UI FIX validation
+
+## Actor combat UI test build (1.0.1-dev)
+
+The development build adds independent bitmap ownership for other players'
+health gauges, monster health gauges, and actor cast bars. They retain their
+live native center while moving or resizing, at every configured scale.
+UIPcGage children inside party panels keep their parent window's transform.
+Actor text now scales around its native top-center attachment; chat-room
+titles retain their bottom-pointer attachment, and tooltip identities retain
+their existing placement rules.
+
+All 24 host harnesses pass. The added movement cases cover 100%, 133%, 150%,
+165%, 175%, and 200%; independent actors, queued transforms, odd dimensions,
+viewport edges, and passive mouse behavior. The RTTI fixture distinguishes
+actor roots from party-panel child gauges and keeps unrelated controls excluded.
+Native hook/layout verification uses the current installed executable SHA256
+`7e96f64968558b88d6fe7d4bdc7a12a15231ee30f942159babe54a9c99b1cc90`.
+The executable is not modified. Test evidence is under
+`evidence/actor-bars-fix` outside the game folder.
+
+In-game verification of other actors' health/cast bars and spell names is
+pending. The public 1.0 release remains unchanged. The local test installation
+preserves the existing INI, including the user's scale and shortcuts.
+
+Test DLL: 230400 bytes, PE32/i386, 185 exact WinMM exports, no static imports,
+IAT or delay imports. SHA256:
+`a5695520b82ae8ce4900a9e684bcc31da9c22cad2f6e61444d70cb4cbc27d585`.
+
+## Released 1.0 baseline
 
 This refreshed 1.0 release adds startup resolution detection and addresses the
 confirmation-dialog, fullscreen-map hover-name, and related UI ownership issues.

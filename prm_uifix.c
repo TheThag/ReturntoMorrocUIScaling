@@ -1,5 +1,5 @@
 /*
- * PRM UI FIX 1.0 - window ownership, scaling and configurable shortcuts
+ * PRM UI FIX 1.0.1-dev - window ownership, scaling and configurable shortcuts
  * 32-bit WINMM proxy for Return to Morroc PRM.exe
  *
  * Runtime integration:
@@ -1019,7 +1019,7 @@ static void install_device_hooks(void* obj) {
     e=patch_vtable_slot(vt,31,(void*)hook_DrawPrimitiveVB,&r->orig_draw_vb);
     f=patch_vtable_slot(vt,32,(void*)hook_DrawIndexedPrimitiveVB,&r->orig_draw_indexed_vb);
     g=patch_vtable_slot(vt,35,(void*)hook_SetTexture,&r->orig_set_texture);
-    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (1.0 owner UI + isolated world input)");
+    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (1.0.1-dev owner UI + isolated world input)");
     else log_line("Direct3DDevice7 hooks: PARTIAL/FAILED");
 }
 
@@ -1686,10 +1686,13 @@ static int owner_class_is_world_label(const char* n) {
     /* C3DCooRendering projects the NPC position and moves this exact window.
        Its finished bitmap uses the normal manager draw. Scale around its live
        center, which the native placement keeps attached to the projection. */
-    /* UIPlayerGage is also a manager-backed window. Scene+2C8 is placed
-       from the player's current projection at VA 742788..280B. Like names,
-       its class lacks Wnd; fallback grouping would retain a stale center. */
-    return n && (s_equal(n,"CSignBoardWnd") || s_equal(n,"UIPlayerGage"));
+    /* Actor gauges are manager-backed windows, placed from live projection:
+       UIPlayerGage at VA 742788, UIPcGage at 7EF488/7F7A40/7F831A,
+       UIMonsterGage at 721402, and UIRechargeGage at 719B12. Their names
+       lack Wnd; fallback grouping would retain an unrelated/stale anchor. */
+    return n && (s_equal(n,"CSignBoardWnd") || s_equal(n,"UIPlayerGage") ||
+                 s_equal(n,"UIPcGage") || s_equal(n,"UIMonsterGage") ||
+                 s_equal(n,"UIRechargeGage"));
 }
 
 static int owner_class_is_world_title(const char* n) {
@@ -1717,6 +1720,13 @@ static int owner_class_should_hook(const char* n) {
 }
 
 static int owner_object_should_hook(DWORD obj, const char* name) {
+    /* UIPcGage is also a child of the party HUD. B1B6F0 stores that parent
+       at +10; actor gauges instead register directly with UIWindowMgr.
+       Leave child gauges in their parent's cached bitmap/transform. */
+    if(s_equal(name,"UIPcGage")) {
+        BYTE* self=(BYTE*)(ULONG_PTR)obj;
+        if(!self || !mem_readable(self,0x14) || *(DWORD*)(self+0x10)) return 0;
+    }
     return owner_class_should_hook(name) || owner_rtti_window_family(obj)==1;
 }
 
@@ -1835,7 +1845,12 @@ static OwnerWindowState* owner_state_for(DWORD obj, int create) {
     if(!obj) return 0;
     for(i=0;i<g_owner_window_count;++i) if(g_owner_windows[i].object_ptr==obj) {
         st=&g_owner_windows[i];
-        if(mem_readable((void*)obj,4) && *(DWORD*)(ULONG_PTR)obj==st->vtable_ptr) return st;
+        if(mem_readable((void*)obj,4) && *(DWORD*)(ULONG_PTR)obj==st->vtable_ptr) {
+            /* A recycled gauge may keep the same address/vtable but become a
+               party-panel child. Recheck that instance boundary on reuse. */
+            if(s_equal(st->class_name,"UIPcGage") && !owner_object_should_hook(obj,st->class_name)) return 0;
+            return st;
+        }
         break;
     }
     if(!create || !mem_readable((void*)obj,4)) return 0;
@@ -2579,7 +2594,7 @@ static void owner_popup_trace_first(OwnerWindowState* st) {
 /* A UIWindow's cached pixels become one or more GPU tiles here, every frame.
  * Capture the whole-window transform once, before any tile or overlay is queued. */
 static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
-    OwnerWindowState* st; UIRectF whole; int native_size,world_label,world_title,world_name,buff;
+    OwnerWindowState* st; UIRectF whole; int native_size,world_label,world_title,world_text,world_name,buff;
     g_owner_bitmap_scope.object_ptr=0; g_owner_bitmap_scope.thread=0;
     if(!g_owner_bitmap_hooks_installed || !g_owner_submit_enabled || !g_owner_scale_enabled) return 0;
     if(w<=0 || h<=0 || w>8192 || h>8192 || x < -8192 || y < -8192 ||
@@ -2589,23 +2604,25 @@ static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
     whole.l=(float)x; whole.t=(float)y; whole.r=(float)(x+w); whole.b=(float)(y+h);
     buff=s_equal(st->class_name,"UITransBalloonText") && owner_is_buff_tooltip(obj);
     world_label=owner_class_is_world_label(st->class_name);
-    world_title=owner_class_is_world_title(st->class_name) ||
-        (s_equal(st->class_name,"UITransBalloonText") && !buff && !owner_is_transient_tooltip(obj));
+    world_title=owner_class_is_world_title(st->class_name);
+    world_text=s_equal(st->class_name,"UITransBalloonText") && !buff && !owner_is_transient_tooltip(obj);
     world_name=owner_class_is_world_name(st->class_name);
-    native_size=!buff && !world_label && !world_title && !world_name && rect_is_global(&whole) && !g_ui_scale_global;
+    native_size=!buff && !world_label && !world_title && !world_text && !world_name && rect_is_global(&whole) && !g_ui_scale_global;
     /* The character-info factory deliberately parks its registered popup at
        (-400,-400) while inactive (VA 59F9B6). Do not reveal that hidden cache. */
     if(s_equal(st->class_name,"UICharInfoBalloonText") && x==-400 && y==-400) native_size=1;
-    if(world_label || world_title || world_name) {
+    if(world_label || world_title || world_text || world_name) {
         /* CSignBoardWnd placement at VA B6C430 subtracts integer half-width
            and half-height from the projected attachment. Preserve that point
            each frame instead of retaining a screen-edge anchor while it moves.
            UIChatRoomTitle is centered on the player at VA 719A89..97; its
            bitmap's bottom pointer (VA 4E6E34..5B) stays at the native position.
+           Actor UITransBalloonText at 719DDE..9E14 and 862121..2161 instead
+           subtracts half-width only: its projected attachment is top-center.
            Player gauges use the live centered bitmap as well (VA 742788).
            Hover names have several native layout modes (VA 73D3D0), no pointer.
            Keep their live bitmap center fixed without changing native placement. */
-        st->ax=(float)(x+w/2); st->ay=(float)(y+(world_title?h:h/2)); st->have_anchor=1;
+        st->ax=(float)(x+w/2); st->ay=(float)(y+(world_title?h:(world_text?0:h/2))); st->have_anchor=1;
     } else if(!st->have_anchor) { choose_group_anchor(&whole,&st->ax,&st->ay); st->have_anchor=1; }
     st->fit_scale=ui_scale_factor();
     if(buff) {
@@ -2613,7 +2630,7 @@ static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
         if(g_ui_keep_on_screen && g_ui_runtime_enabled)
             owner_fit_rect(&whole,st->ax,st->ay,&st->fit_scale,&st->offset_x,&st->offset_y);
     } else if(!g_ui_keep_on_screen || !g_ui_runtime_enabled || native_size ||
-       world_label || world_title || world_name) {
+       world_label || world_title || world_text || world_name) {
         st->offset_x=st->offset_y=0.0f;
         if(!native_size) owner_popup_offset(st,x,y,&st->offset_x,&st->offset_y);
     } else {
@@ -2638,8 +2655,8 @@ static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
     st->last_draw_order=g_owner_bitmap_order; st->last_draw_present=g_ui_present_serial+1;
     g_owner_bitmap_scope.object_ptr=obj; g_owner_bitmap_scope.vtable_ptr=st->vtable_ptr;
     g_owner_bitmap_scope.thread=g_GetCurrentThreadId?g_GetCurrentThreadId():0;
-    g_owner_bitmap_scope.ax=owner_class_is_hover_popup(st->class_name) && !world_title && !buff?(float)x:st->ax;
-    g_owner_bitmap_scope.ay=owner_class_is_hover_popup(st->class_name) && !world_title && !buff?(float)y:st->ay;
+    g_owner_bitmap_scope.ax=owner_class_is_hover_popup(st->class_name) && !world_title && !world_text && !buff?(float)x:st->ax;
+    g_owner_bitmap_scope.ay=owner_class_is_hover_popup(st->class_name) && !world_title && !world_text && !buff?(float)y:st->ay;
     g_owner_bitmap_scope.native_size=native_size;
     g_owner_bitmap_scope.fit_scale=st->fit_scale;
     g_owner_bitmap_scope.offset_x=st->offset_x; g_owner_bitmap_scope.offset_y=st->offset_y;
@@ -3765,7 +3782,7 @@ static void maybe_dump_owner_windows(void) {
     static OwnerInputRegion active[64];
     if(!g_owner_submit_enabled) return;
     if(!ui_hotkey_take(UIHK_DIAGNOSTICS)) return;
-    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 1.0 present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 1.0.1-dev present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
     s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
     s_append(line,sizeof(line)," ownerMouse="); s_append_uint(line,sizeof(line),g_owner_mapped_mouse);
@@ -4467,7 +4484,7 @@ static void ui_present_boundary(const char* method) {
         log_line(line);
     }
     if(g_owner_submit_enabled && g_ui_present_serial>0 && (g_ui_present_serial%1200UL)==0) {
-        line[0]=0; s_append(line,sizeof(line),"1.0 heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+        line[0]=0; s_append(line,sizeof(line),"1.0.1-dev heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
         s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
         s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
@@ -4975,7 +4992,7 @@ static void install_phase2_hooks(void) {
     if(!g_exe) return;
     ok=patch_import(g_exe,"DDRAW.dll","DirectDrawCreateEx",(void*)hook_DirectDrawCreateEx,(void**)&g_real_DirectDrawCreateEx);
     log_line(ok ? "DirectDrawCreateEx IAT hook: OK" : "DirectDrawCreateEx IAT hook: NOT FOUND");
-    if(ok) log_line("1.0 renderer armed: all-window owner UI + isolated world input");
+    if(ok) log_line("1.0.1-dev renderer armed: all-window owner UI + isolated world input");
 }
 
 /* ---------- real WINMM ---------- */
@@ -5009,7 +5026,7 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Version 1.0 ===");
+    log_line("=== PRM UI FIX Version 1.0.1-dev (actor combat UI) ===");
     log_line("Proxy DLL loaded");
     ui_hotkeys_load();
     if (g_GetPrivateProfileIntA) {
@@ -5166,7 +5183,7 @@ static void initialize_mod(void) {
     owner_submit_install_hooks();
     vtrace_install_submit_hooks();
     vtrace_install_active_vtables();
-    log_line("UI FIX 1.0 armed: shortcuts configured in INI [Keybinds]");
+    log_line("UI FIX 1.0.1-dev armed: shortcuts configured in INI [Keybinds]");
     log_line("Initialization complete");
 }
 

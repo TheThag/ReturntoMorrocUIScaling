@@ -475,13 +475,67 @@ static void test_first_hover_popup(void) {
        never translate that other instance or clamp it away from its actor. */
     st=window(2,"UITransBalloonText");
     CHECK(owner_bitmap_prepare(2,700,500,140,30)); scope=g_owner_bitmap_scope;
-    CHECK(scope.ax==770 && scope.ay==530 && scope.offset_x==0 && scope.offset_y==0);
+    CHECK(scope.ax==770 && scope.ay==500 && scope.offset_x==0 && scope.offset_y==0);
     CHECK(!st->last_input_order);
     quad(&q,700,500,140,30); owner_bitmap_note_vertices(&q,4,&scope);
     CHECK(make_scaled_ui_vertices(5,0x1c4,&q,4,out.bytes,sizeof(out),0,0)==&out);
     assert_close((out.f[0][0]+out.f[1][0])*0.5f,770,0.01f);
-    assert_close(out.f[2][1],530,0.01f);
+    assert_close(out.f[0][1],500,0.01f);
     puts("PASS popups: exact transient/character-info classes scale on first draw and revisit, fit at edges, and never claim input");
+}
+
+static void test_actor_speech_top_center(void) {
+    static const int scales[]={100,133,150,165,175,200};
+    static const LONG moves[][4]={
+        {700,500,140,30},
+        {2400,800,201,37},
+        {-60,250,96,24},
+        {3200,1320,220,41},
+    };
+    unsigned int si,mi;
+    for(si=0;si<sizeof(scales)/sizeof(scales[0]);++si) {
+        OwnerWindowState* st; OwnerBitmapScope pending_scope; Quad pending,out;
+        int have_pending=0;
+        reset_all(); g_ui_screen_w=3440; g_ui_screen_h=1440;
+        g_ui_scale_percent=scales[si];
+        st=window(2,"UITransBalloonText");
+        CHECK(owner_class_should_hook("UITransBalloonText"));
+        CHECK(!owner_class_is_world_title("UITransBalloonText"));
+        st->have_anchor=1; st->ax=17.0f; st->ay=29.0f;
+        st->fit_scale=0.75f; st->offset_x=611.0f; st->offset_y=-377.0f;
+        for(mi=0;mi<sizeof(moves)/sizeof(moves[0]);++mi) {
+            LONG x=moves[mi][0],y=moves[mi][1],w=moves[mi][2],h=moves[mi][3];
+            OwnerBitmapScope current;
+            const void* drawn_ptr; const Quad* drawn;
+            /* Consume the preceding frame only after the actor has moved. */
+            if(have_pending) {
+                LONG pending_w=(LONG)(pending.f[1][0]-pending.f[0][0]);
+                drawn_ptr=make_scaled_ui_vertices(5,0x1c4,&pending,4,out.bytes,sizeof(out),0,0);
+                CHECK(drawn_ptr==(const void*)&pending || drawn_ptr==(const void*)&out);
+                drawn=(const Quad*)drawn_ptr;
+                assert_scaled_quad(&pending,drawn,&pending_scope);
+                assert_close(drawn->f[0][1],pending_scope.ay,0.01f);
+                assert_close((drawn->f[0][0]+drawn->f[1][0])*0.5f,
+                             pending_scope.ax+(float)(pending_w&1)*0.5f*pending_scope.fit_scale,0.01f);
+            }
+            CHECK(owner_bitmap_prepare(2,x,y,w,h));
+            current=g_owner_bitmap_scope;
+            CHECK(current.object_ptr==2 && current.ax==(float)(x+w/2) && current.ay==(float)y);
+            CHECK(current.fit_scale==(float)scales[si]*0.01f);
+            CHECK(current.offset_x==0.0f && current.offset_y==0.0f && !st->last_input_order);
+            quad(&pending,x,y,w,h); owner_bitmap_note_vertices(&pending,4,&current);
+            pending_scope=current; have_pending=1;
+            ++g_ui_present_serial;
+        }
+        if(have_pending) {
+            const void* drawn_ptr=make_scaled_ui_vertices(5,0x1c4,&pending,4,out.bytes,sizeof(out),0,0);
+            const Quad* drawn=(const Quad*)drawn_ptr;
+            CHECK(drawn_ptr==(const void*)&pending || drawn_ptr==(const void*)&out);
+            assert_scaled_quad(&pending,drawn,&pending_scope);
+            assert_close(drawn->f[0][1],pending_scope.ay,0.01f);
+        }
+    }
+    puts("PASS actor speech: UITransBalloonText follows the moving actor's top-center at 100/133/150/165/175/200%, including resizing, offscreen positions, queued transforms, and passive input");
 }
 
 static void test_native_clamp_preserves_requested_origin(void) {
@@ -570,6 +624,99 @@ static void test_moving_player_gauge(void) {
     puts("PASS player gauge: each movement updates the exact world-window anchor, preserves bar alignment, and excludes HUD graph controls");
 }
 
+static void test_moving_world_gauges(void) {
+    static const char* classes[]={"UIPcGage","UIMonsterGage","UIRechargeGage","UIPlayerGage","CSignBoardWnd"};
+    static const int scales[]={100,133,150,165,175,200};
+    static const LONG moves[][8]={
+        {900,800,60,9,       2100,100,72,12},
+        {0,0,72,12,          3380,1390,60,10},
+        {-24,180,96,14,      3446,600,54,12},
+        {3432,-18,54,12,     1500,600,28,24},
+        {1600,620,34,18,     -64,1420,88,16},
+    };
+    unsigned int c,si,mi;
+    for(c=0;c<sizeof(classes)/sizeof(classes[0]);++c) {
+        for(si=0;si<sizeof(scales)/sizeof(scales[0]);++si) {
+            OwnerWindowState *first,*second;
+            reset_all(); g_ui_screen_w=3440; g_ui_screen_h=1440;
+            g_ui_scale_percent=scales[si];
+            CHECK(owner_class_should_hook(classes[c]));
+            CHECK(owner_class_is_world_label(classes[c]));
+            first=window(1,classes[c]); second=window(2,classes[c]);
+            /* Seed stale state from a previous edge-clamped frame. A world
+               gauge must overwrite the anchor and clear every fit/input
+               artifact before its first live draw. */
+            first->have_anchor=1; first->ax=17.0f; first->ay=29.0f;
+            first->fit_scale=0.75f; first->offset_x=611.0f; first->offset_y=-377.0f;
+            first->last_input_order=41;
+            second->have_anchor=1; second->ax=31.0f; second->ay=43.0f;
+            second->fit_scale=0.80f; second->offset_x=-503.0f; second->offset_y=271.0f;
+            second->last_input_order=42;
+            for(mi=0;mi<sizeof(moves)/sizeof(moves[0]);++mi) {
+                const LONG* move=moves[mi];
+                LONG x1=move[0],y1=move[1],w1=move[2],h1=move[3];
+                LONG x2=move[4],y2=move[5],w2=move[6],h2=move[7];
+                OwnerBitmapScope first_scope,second_scope;
+                OwnerBitmapScope moved_scope;
+                const Quad *drawn1,*drawn2;
+                const void *drawn_ptr1,*drawn_ptr2;
+                Quad q1,q2,out1,out2;
+
+                /* Two independent actors move and resize in the same frame.
+                   Their live bitmap centers must be recomputed separately. */
+                CHECK(owner_bitmap_prepare(1,x1,y1,w1,h1));
+                first_scope=g_owner_bitmap_scope;
+                CHECK(first_scope.object_ptr==1);
+                CHECK(first_scope.ax==(float)(x1+w1/2) &&
+                      first_scope.ay==(float)(y1+h1/2));
+                CHECK(first_scope.offset_x==0.0f && first_scope.offset_y==0.0f);
+                CHECK(first->ax==first_scope.ax && first->ay==first_scope.ay);
+                CHECK(!first->last_input_order);
+                quad(&q1,x1,y1,w1,h1); owner_bitmap_note_vertices(&q1,4,&first_scope);
+
+                CHECK(owner_bitmap_prepare(2,x2,y2,w2,h2));
+                second_scope=g_owner_bitmap_scope;
+                CHECK(second_scope.object_ptr==2);
+                CHECK(second_scope.ax==(float)(x2+w2/2) &&
+                      second_scope.ay==(float)(y2+h2/2));
+                CHECK(second_scope.offset_x==0.0f && second_scope.offset_y==0.0f);
+                CHECK(second->ax==second_scope.ax && second->ay==second_scope.ay);
+                CHECK(!second->last_input_order);
+                quad(&q2,x2,y2,w2,h2); owner_bitmap_note_vertices(&q2,4,&second_scope);
+
+                /* Move and resize the first actor before consuming either
+                   queued quad. Registry records must retain each draw's own
+                   live center rather than borrowing the newest scope. */
+                CHECK(owner_bitmap_prepare(1,x1+17,y1+11,w1+4,h1+2));
+                moved_scope=g_owner_bitmap_scope;
+                CHECK(moved_scope.object_ptr==1);
+                CHECK(moved_scope.ax==(float)(x1+17+(w1+4)/2) &&
+                      moved_scope.ay==(float)(y1+11+(h1+2)/2));
+                CHECK(moved_scope.offset_x==0.0f && moved_scope.offset_y==0.0f &&
+                      !first->last_input_order);
+
+                drawn_ptr1=make_scaled_ui_vertices(5,0x1c4,&q1,4,out1.bytes,sizeof(out1),0,0);
+                drawn_ptr2=make_scaled_ui_vertices(5,0x1c4,&q2,4,out2.bytes,sizeof(out2),0,0);
+                CHECK(drawn_ptr1==(const void*)&q1 || drawn_ptr1==(const void*)&out1);
+                CHECK(drawn_ptr2==(const void*)&q2 || drawn_ptr2==(const void*)&out2);
+                drawn1=(const Quad*)drawn_ptr1; drawn2=(const Quad*)drawn_ptr2;
+                assert_scaled_quad(&q1,drawn1,&first_scope);
+                assert_scaled_quad(&q2,drawn2,&second_scope);
+                assert_close((drawn1->f[0][0]+drawn1->f[1][0])*0.5f,
+                             first_scope.ax+(float)(w1&1)*0.5f*first_scope.fit_scale,0.01f);
+                assert_close((drawn1->f[0][1]+drawn1->f[2][1])*0.5f,
+                             first_scope.ay+(float)(h1&1)*0.5f*first_scope.fit_scale,0.01f);
+                assert_close((drawn2->f[0][0]+drawn2->f[1][0])*0.5f,
+                             second_scope.ax+(float)(w2&1)*0.5f*second_scope.fit_scale,0.01f);
+                assert_close((drawn2->f[0][1]+drawn2->f[2][1])*0.5f,
+                             second_scope.ay+(float)(h2&1)*0.5f*second_scope.fit_scale,0.01f);
+                ++g_ui_present_serial;
+            }
+        }
+    }
+    puts("PASS world gauges: UIPcGage/UIMonsterGage/UIRechargeGage and existing world labels follow live centers at 100/133/150/165/175/200%, including resizing, independent actors, edges, and offscreen positions without fit offsets or input ownership");
+}
+
 int main(void) {
     test_edges_corners_scales();
     test_persistent_edge_offset();
@@ -577,9 +724,11 @@ int main(void) {
     test_oversized_toggles_and_exclusions();
     test_independent_roots();
     test_first_hover_popup();
+    test_actor_speech_top_center();
     test_native_clamp_preserves_requested_origin();
     test_native_clamp_then_scaled_fit();
     test_moving_player_gauge();
+    test_moving_world_gauges();
     return 0;
 }
 '''

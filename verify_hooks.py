@@ -162,6 +162,124 @@ PLAYER_GAUGE_LAYOUT = (
     (0x003427A3, bytes.fromhex("8b 86 ac 00 00 00 83 e8 1e 8b be b0 00 00 00")),
 )
 
+# Native gauge layout evidence. These spans are intentionally not patch
+# sites: they pin the exact world-gauge constructors, actor-owned storage,
+# manager registration, and projection-based SetPos calls. The final entries
+# prove that the fixed mini-party gauges are children (UIWindow +0x10) while
+# the world gauges are registered as manager roots.
+NATIVE_GAUGE_LAYOUT = (
+    ("UIPcGage constructor vtable", 0x000F8265,
+     bytes.fromhex("c7 06 c8 40 d3 00")),
+    ("UIMonsterGage base UIPc vtable", 0x000F8045,
+     bytes.fromhex("c7 06 c8 40 d3 00")),
+    ("UIMonsterGage final vtable", 0x000F8084,
+     bytes.fromhex("c7 06 50 42 d3 00")),
+    ("UIRechargeGage constructor vtable", 0x000F84E5,
+     bytes.fromhex("c7 06 04 40 d3 00")),
+
+    ("UIMonsterGage constructor call", 0x003213B0,
+     bytes.fromhex("e8 5b 6c dd ff")),
+    ("UIMonsterGage actor storage +0x2FC", 0x003213C6,
+     bytes.fromhex("89 83 fc 02 00 00")),
+    ("UIMonsterGage manager registration", 0x003213DC,
+     bytes.fromhex("e8 ef 39 ed ff")),
+    ("UIMonsterGage projected SetPos", 0x00321402,
+     bytes.fromhex(
+         "66 0f 6e 83 b0 00 00 00 83 c4 04 0f 5b c0 8b ce "
+         "66 0f 6e c8 0f 5b c9 f3 0f 59 4b 5c f3 0f 58 c8 "
+         "f3 0f 2c c1 50 8b 46 14 99 2b c2 8b 93 ac 00 00 00 "
+         "d1 f8 2b d0 8b 47 10 52 ff d0")),
+
+    ("UIPcGage world path A constructor call", 0x003EF424,
+     bytes.fromhex("e8 07 8e d0 ff")),
+    ("UIPcGage world path A actor storage +0x400", 0x003EF43A,
+     bytes.fromhex("89 83 00 04 00 00")),
+    ("UIPcGage world path A manager registration", 0x003EF450,
+     bytes.fromhex("e8 7b 59 e0 ff")),
+    ("UIPcGage world path A projected SetPos", 0x003EF488,
+     bytes.fromhex("03 83 b0 00 00 00 83 c4 04 8b ce 50 8b 83 ac 00 00 00 83 e8 1e 50 ff 57 10")),
+    ("UIPcGage world path B constructor call", 0x003F79E0,
+     bytes.fromhex("e8 4b 08 d0 ff")),
+    ("UIPcGage world path B actor storage +0x448", 0x003F79F6,
+     bytes.fromhex("89 83 48 04 00 00")),
+    ("UIPcGage world path B manager registration", 0x003F7A0C,
+     bytes.fromhex("e8 bf d3 df ff")),
+    ("UIPcGage world path B projected SetPos", 0x003F7A40,
+     bytes.fromhex("03 83 b0 00 00 00 83 c4 04 8b ce 50 8b 83 ac 00 00 00 83 e8 1e 50 ff 57 10")),
+    ("UIPcGage world path C constructor call", 0x003F82C3,
+     bytes.fromhex("e8 68 ff cf ff")),
+    ("UIPcGage world path C actor storage +0x460", 0x003F82D9,
+     bytes.fromhex("89 83 60 04 00 00")),
+    ("UIPcGage world path C manager registration", 0x003F82EF,
+     bytes.fromhex("e8 dc ca df ff")),
+    ("UIPcGage world path C projected SetPos", 0x003F831A,
+     bytes.fromhex("6a 0c 8b 3e e8 2d 25 d7 ff 03 83 b0 00 00 00 83 c4 04 8b ce 50 8b 83 ac 00 00 00 83 e8 1e 50 ff 57 10")),
+
+    ("UIRechargeGage world constructor call", 0x00319AF1,
+     bytes.fromhex("e8 ba e9 dd ff")),
+    ("UIRechargeGage actor storage +0x26C", 0x00319B07,
+     bytes.fromhex("89 83 6c 02 00 00")),
+    ("UIRechargeGage projected SetPos", 0x00319B12,
+     bytes.fromhex(
+         "66 0f 6e 8b b0 00 00 00 f3 0f 10 43 5c f3 0f 59 05 "
+         "38 e1 0e 01 8b 8b 6c 02 00 00 0f 5b c9 8b 11 f3 0f "
+         "5c c8 f3 0f 2c c1 50 8b 83 ac 00 00 00 83 e8 1e 50 "
+         "8b 42 10 ff d0")),
+    ("UIRechargeGage manager registration", 0x00319B55,
+     bytes.fromhex("e8 76 b2 ed ff")),
+
+    ("Gauge base clears UIWindow parent +0x10", 0x0071B2EE,
+     bytes.fromhex("c7 47 10 00 00 00 00")),
+    ("UIWindow AddChild writes child parent +0x10", 0x0071B6F9,
+     bytes.fromhex("89 48 10")),
+    ("UIDragMiniPartyWnd gauge AddChild A", 0x001E4390,
+     bytes.fromhex("ff b7 e4 00 00 00 8b cf e8 53 73 53 00")),
+    ("UIDragMiniPartyWnd gauge AddChild array", 0x001E47EE,
+     bytes.fromhex("8b ce ff 30 e8 f9 6e 53 00")),
+    ("UIMiniPartyInfoWnd gauge AddChild", 0x001E5BD5,
+     bytes.fromhex("8b ce e8 14 5b 53 00")),
+)
+
+# The two actor text producers use the same UITransBalloonText object at
+# owner +0x260.  These are native-layout evidence spans only: they do not
+# identify patch sites.  Both cache the rendered width/height and place the
+# text at projected-X minus half width and projected-Y minus scale(0x6E),
+# proving the top-center actor attachment used by the UI text policy.
+ACTOR_TEXT_LAYOUT = (
+    ("Actor UITrans A constructor call", 0x00319D2E,
+     bytes.fromhex("e8 bd 2f dc ff")),
+    ("Actor UITrans A stores +0x260", 0x00319D41,
+     bytes.fromhex("89 83 60 02 00 00")),
+    ("Actor UITrans A manager registration", 0x00319D4C,
+     bytes.fromhex("ff b3 60 02 00 00 b9 d8 76 eb 00 e8 74 b0 ed ff")),
+    ("Actor UITrans A caches width", 0x00319DC2,
+     bytes.fromhex("8b 83 60 02 00 00 6a 6e 8b 40 14 89 83 84 02 00 00")),
+    ("Actor UITrans A caches height", 0x00319DD3,
+     bytes.fromhex("8b 83 60 02 00 00 8b 40 18 89 83 88 02 00 00")),
+    ("Actor UITrans A top-center SetPos", 0x00319DE2,
+     bytes.fromhex(
+         "8b b3 60 02 00 00 8b 3e e8 61 0a e5 ff 8b 93 b0 00 00 00 "
+         "83 c4 04 2b d0 8b ce 8b 83 84 02 00 00 52 99 2b c2 "
+         "8b 93 ac 00 00 00 d1 f8 2b d0 8b 47 10 52 ff d0")),
+
+    ("Actor UITrans B constructor call", 0x004620A5,
+     bytes.fromhex("e8 46 ac c7 ff")),
+    ("Actor UITrans B stores +0x260", 0x004620BB,
+     bytes.fromhex("89 83 60 02 00 00")),
+    ("Actor UITrans B manager registration", 0x004620C6,
+     bytes.fromhex("ff b3 60 02 00 00 b9 d8 76 eb 00 e8 fa 2c d9 ff")),
+    ("Actor UITrans B caches width", 0x00462104,
+     bytes.fromhex("8b 9b 60 02 00 00 8b 73 14 89 b1 84 02 00 00")),
+    ("Actor UITrans B caches height", 0x00462113,
+     bytes.fromhex("8b 43 18 89 81 88 02 00 00")),
+    ("Actor UITrans B top-center SetPos", 0x0046211C,
+     bytes.fromhex(
+         "a1 38 4a eb 00 8b 3b 6b 48 28 6e b8 89 88 88 88 f7 e9 "
+         "8b 85 78 ff ff ff 03 d1 c1 fa 08 8b ca c1 e9 1f 03 ca "
+         "8b 90 b0 00 00 00 2b d1 8b c6 52 99 8b cb 2b c2 "
+         "8b 95 78 ff ff ff d1 f8 8b 92 ac 00 00 00 2b d0 52 ff 57 10")),
+)
+
 
 class PEImage:
     def __init__(self, path):
@@ -366,6 +484,26 @@ def main():
         except ValueError as error:
             failures.append(str(error))
     print("Player HP/SP gauge native constructor and live projection checked")
+    for label, rva, expected in NATIVE_GAUGE_LAYOUT:
+        try:
+            actual = pe.read_code(rva, len(expected))
+            if actual != expected:
+                raise ValueError(
+                    f"{label}: native bytes differ at RVA 0x{rva:08X}; "
+                    f"found {actual.hex(' ')}, expected {expected.hex(' ')}")
+        except ValueError as error:
+            failures.append(str(error))
+    print("Native UIPc/UIMonster/UIRecharge gauge paths and HUD parent-field evidence checked")
+    for label, rva, expected in ACTOR_TEXT_LAYOUT:
+        try:
+            actual = pe.read_code(rva, len(expected))
+            if actual != expected:
+                raise ValueError(
+                    f"{label}: native bytes differ at RVA 0x{rva:08X}; "
+                    f"found {actual.hex(' ')}, expected {expected.hex(' ')}")
+        except ValueError as error:
+            failures.append(str(error))
+    print("Actor UITrans +0x260 construction, cached size, and projected top-center placement checked")
     viewport_ok = True
     for rva, expected in VIEWPORT_STORES:
         try:

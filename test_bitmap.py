@@ -429,6 +429,52 @@ static void npc_world_labels(void) {
     transformed(&plaque,&out,states[2].ax,states[2].ay);
     CHECK(states[2].last_input_order && g_ui_scaled_draws==8 && !fallback_collected);
 }
+
+static void actor_speech_top_center(void) {
+    static const int scales[]={100,133,150,165,175,200};
+    static const LONG moves[][4]={
+        {700,500,140,30},
+        {1700,800,201,37},
+        {-60,250,96,24},
+        {1800,1020,96,41},
+    };
+    DWORD si,mi; OwnerWindowState* st;
+    for(si=0;si<sizeof(scales)/sizeof(scales[0]);++si) {
+        Quad queued[2],out; OwnerBitmapScope saved[2];
+        reset(); g_ui_keep_on_screen=1; g_ui_scale_percent=scales[si];
+        st=owner_state_for(2,1); strcpy(st->class_name,"UITransBalloonText");
+        st->have_anchor=1; st->ax=17; st->ay=29;
+        st->fit_scale=0.75f; st->offset_x=611; st->offset_y=-377;
+        for(mi=0;mi<sizeof(moves)/sizeof(moves[0]);++mi) {
+            DWORD slot=mi&1; LONG x=moves[mi][0],y=moves[mi][1],w=moves[mi][2],h=moves[mi][3];
+            CHECK(owner_bitmap_prepare(2,x,y,w,h));
+            saved[slot]=g_owner_bitmap_scope;
+            CHECK(saved[slot].ax==(float)(x+w/2) && saved[slot].ay==(float)y);
+            CHECK(saved[slot].fit_scale==(float)scales[si]*0.01f);
+            CHECK(saved[slot].offset_x==0 && saved[slot].offset_y==0);
+            CHECK(!st->last_input_order);
+            quad(&queued[slot],x,y,w,h); tag(&queued[slot]);
+            if(mi) {
+                DWORD previous=(mi-1)&1; const void* ptr=scale(&queued[previous],&out,0);
+                const Quad* drawn=(const Quad*)ptr;
+                CHECK(ptr==(const void*)&queued[previous] || ptr==(const void*)&out);
+                transformed(&queued[previous],drawn,saved[previous].ax,saved[previous].ay);
+                CHECK(f_abs(drawn->f[0][1]-saved[previous].ay)<0.001f);
+            }
+            ++g_ui_present_serial;
+        }
+        {
+            DWORD last=(sizeof(moves)/sizeof(moves[0])-1)&1;
+            const void* ptr=scale(&queued[last],&out,0);
+            const Quad* drawn=(const Quad*)ptr;
+            CHECK(ptr==(const void*)&queued[last] || ptr==(const void*)&out);
+            transformed(&queued[last],drawn,saved[last].ax,saved[last].ay);
+            CHECK(f_abs(drawn->f[0][1]-saved[last].ay)<0.001f);
+        }
+        CHECK(!g_owner_bitmap_active_count);
+    }
+}
+
 static void chat_room_titles(void) {
     Quad box,tail,out,old_box; OwnerWindowState* st;
     const LONG positions[][2]={{500,250},{2300,700},{-50,300}};
@@ -540,8 +586,8 @@ static void presentation_activity(void) {
 int main(void) {
     split_tiles(); offscreen_tiles(); overlap_and_identity(); fingerprint_and_reuse();
     lifetime(); bounded_collisions(); full_capacity(); prepare_gates_and_popup();
-    scaler_integration(); npc_world_labels(); chat_room_titles(); hover_names(); scope_wrapper(); presentation_activity();
-    puts("PASS bitmap ownership: frozen tile transforms, offscreen edges, overlap, identity, 24 immutable fields, colors, reuse, expiry, wrap, bounded collisions, capacity, preparation, disabled scaling, native-size provenance, offscreen bypass, legacy isolation, NPC enlargement at moving attachment and tiled labels, chat-room body/tail attachment and input ownership, normal/vertical hover-name centers and passive input, scope restoration, presentation activity");
+    scaler_integration(); npc_world_labels(); actor_speech_top_center(); chat_room_titles(); hover_names(); scope_wrapper(); presentation_activity();
+    puts("PASS bitmap ownership: frozen tile transforms, offscreen edges, overlap, identity, 24 immutable fields, colors, reuse, expiry, wrap, bounded collisions, capacity, preparation, disabled scaling, native-size provenance, offscreen bypass, legacy isolation, NPC enlargement at moving attachment and tiled labels, actor-speech top-center attachment, chat-room body/tail attachment and input ownership, normal/vertical hover-name centers and passive input, scope restoration, presentation activity");
     return 0;
 }
 """
