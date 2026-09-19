@@ -1,3 +1,12 @@
+# Release 1.0.1 — 2026-09-19
+
+The user confirmed all pending buff, combat-text, and dragged-icon checks on
+2026-09-19. Earlier actor-bar and summon-flash corrections were also confirmed.
+All 25 host harnesses and native verification pass for the release rebuild.
+Release source differs from the confirmed b853b07 implementation only in
+version labels. The packaged default INI is unchanged. Windows remains untested.
+Release DLL SHA256: `52b34a392057b43e6ce47fe81cadf7e465dcdcc72f08619bcbdb15e1dd722202`.
+
 # Buff, combat text, and drag sprite test build (1.0.1-dev)
 
 The user confirmed world-effect isolation, then reported buff icons, combat
@@ -22,8 +31,8 @@ All 25 host harnesses pass, including i386 ASan/UBSan coverage of exactly
 100–250% drag/hover transforms, native call forwarding, and combat scale
 restoration. Native opcode/layout checks match PRM.exe SHA256
 `7e96f64968558b88d6fe7d4bdc7a12a15231ee30f942159babe54a9c99b1cc90`.
-In-game verification of these new paths remains pending; host fixtures cannot
-prove that every combat-label variant uses the identified producers.
+The user confirmed these paths in-game on 2026-09-19. Host fixtures do not
+prove coverage of untested combat-label variants.
 
 Installed DLL: 233984 bytes, PE32/i386, 185 exact WinMM exports, no imports.
 SHA256: `e4b180b0b11b83c3b9daeb1d9d603f88ca5eb8ff191c6aaae14676e5e094e09a`.

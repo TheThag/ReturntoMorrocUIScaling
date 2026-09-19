@@ -4,14 +4,14 @@ UI FIX enlarges the game interface while keeping clicks, dragging and tooltips
 aligned with their windows. It includes screen fitting, corrected world input,
 actor-attached labels, minimap support and an in-game settings overlay.
 
-Release **1.0** was refreshed on 2026-09-08 with automatic resolution detection,
-confirmation-dialog input fixes and fullscreen-map hover-name corrections.
-The updated build was tested in-game on Linux/Wine. Windows remains untested.
+Release **1.0.1** fixes actor health and cast bars, combat text, buff icons,
+and dragged skill/item icons while preserving world-effect placement.
+These fixes were confirmed in-game on Linux/Wine. Windows remains untested.
 
 ## Download and install
 
-Download **ReturntoMorrocUIScaling-1.0.zip** from the
-[1.0 release](https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.0).
+Download **ReturntoMorrocUIScaling-1.0.1.zip** from the
+[1.0.1 release](https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.0.1).
 The repository contains source code; compiled DLLs are distributed as release assets.
 
 1. Download the ZIP under **Assets**, then close the game. Preserve any existing
@@ -58,7 +58,7 @@ Keep wrapper DLLs local to the game folder. To undo the workaround, remove only
 the dgVoodoo files you added and restore any previous wrapper files.
 
 The supported client is the 2020-09-02 PRM executable, SHA256
-`5b3fbd6b63d0e409dd0dbea0bcb389bab61d8e37a36855fe925a0a2310ea4d9b`.
+`7e96f64968558b88d6fe7d4bdc7a12a15231ee30f942159babe54a9c99b1cc90`.
 Native hook locations are specific to this client. See [validation](VALIDATION.md)
 for test coverage and known limitations.
 
