@@ -14,6 +14,10 @@ import sys
 
 
 HOOKS = (
+    ("Buff icon renderer", "PRM_BUFF_DRAW", 0x00274BA6, 0x0026D6D0),
+    ("Effect triangle submit", "PRM_EFFECT_QUEUE", 0x000A0961, 0x000A0550),
+    ("Dragged item/skill sprite", "PRM_DRAG_SPRITE", 0x003404CA, 0x00227BC0),
+    ("Actor combat sprite", "PRM_COMBAT_DRAW", 0x00314FE9, 0x00315000),
     ("UI event hit query", "PRM_UI_HIT_EVENT", 0x001F862C, 0x001FA1A0),
     ("UI mouse hit query", "PRM_UI_HIT_MOUSE", 0x00209FCE, 0x001FA1A0),
     ("Buff hover update", "PRM_BUFF_HOVER", 0x00341A30, 0x0035BF60),
@@ -35,6 +39,25 @@ HOOKS = (
     ("Map line submit", "PRM_MAP_LINE_QUEUE", 0x00091FD0, 0x000A0550),
     ("Map route arrow submit", "PRM_MAP_ARROW_QUEUE", 0x00177DC0, 0x000A0550),
     ("Map character marker submit", "PRM_MAP_SPRITE_QUEUE", 0x0017AA2D, 0x000A0550),
+)
+
+# Exact non-window UI producers. Unclassified world effects stay native.
+EFFECT_SPRITE_LAYOUT = (
+    ('Buff marker', 0x0026D6D9, bytes.fromhex("80 bf e0 03 00 00 62")),
+    ('Buff flags', 0x002CDF58, bytes.fromhex("c7 80 bc 01 00 00 01 02 00 00")),
+    ('Buff mode', 0x002CDF75, bytes.fromhex("c7 80 d4 01 00 00 04 00 00 00")),
+    ('Buff creation marker', 0x002CE03C, bytes.fromhex("c6 80 e0 03 00 00 62")),
+    ('Triangle vertex count', 0x000A093F, bytes.fromhex("c7 42 04 03 00 00 00")),
+    ('Drag physical mouse reads', 0x0034047A, bytes.fromhex("8b 35 78 33 e8 00 8b 3d 74 33 e8 00")),
+    ('Drag ACT scale', 0x0034049B, bytes.fromhex("c7 04 24 00 00 80 3f")),
+    ('Combat base draw arguments', 0x00314FE2, bytes.fromhex("6a 00 ff 75 08 8b cf")),
+    ('Numeric effect vtable', 0x003EC01C, bytes.fromhex("c7 06 1c 0d d5 00")),
+    ('Message effect vtable', 0x00459A05, bytes.fromhex("c7 06 30 89 d5 00")),
+    ('Numeric digit spacing scale', 0x00315254, bytes.fromhex("f3 0f 59 46 50")),
+    ('Numeric sprite X scale', 0x0030E40F, bytes.fromhex("f3 0f 59 47 50")),
+    ('Numeric sprite Y scale', 0x0030E477, bytes.fromhex("f3 0f 59 47 50")),
+    ('Numeric kind switch', 0x0046025F, bytes.fromhex("8d 41 f3 83 f8 09 0f 87 a2 00 00 00 0f b6 80 14 07 86 00 ff 24 85 04 07 86")),
+    ('Numeric alternate kind', 0x0046030D, bytes.fromhex("83 f9 72 0f 85 0e 03 00 00 68 d4 d7 d4 00")),
 )
 
 # Each manager thunk replaces one indirect thiscall plus the following EBX
@@ -538,7 +561,7 @@ def main():
         except ValueError as error:
             failures.append(str(error))
     print("Actor UITrans +0x260 construction, cached size, and projected top-center placement checked")
-    for label, rva, expected in ADDITIONAL_ROOT_LAYOUT:
+    for label, rva, expected in ADDITIONAL_ROOT_LAYOUT + EFFECT_SPRITE_LAYOUT:
         try:
             actual = pe.read_code(rva, len(expected))
             if actual != expected:
@@ -546,6 +569,13 @@ def main():
         except ValueError as error:
             failures.append(str(error))
     print("Merchant buy/sell actor attachment and quest tracker manager ownership checked")
+    for name, expected in (("PRM_NUM_EFFECT_VTABLE_RVA", 0x950D1C),
+                           ("PRM_MSG_EFFECT_VTABLE_RVA", 0x958930)):
+        try:
+            if source_constant(source, name) != expected:
+                raise ValueError(f"{name}: differs from proven effect constructor")
+        except ValueError as error:
+            failures.append(str(error))
     viewport_ok = True
     for rva, expected in VIEWPORT_STORES:
         try:

@@ -99,6 +99,16 @@ typedef struct _LOGFONTA {
 #define PRM_MAP_DRAW_TARGET_RVA    0x0017B3E0UL
 #define PRM_MAP_VTABLE_RVA         0x0093D858UL
 #define PRM_MINIMAP_DRAW_CALL_RVA  0x0034024DUL
+#define PRM_BUFF_DRAW_CALL_RVA     0x00274BA6UL
+#define PRM_BUFF_DRAW_TARGET_RVA   0x0026D6D0UL
+#define PRM_EFFECT_QUEUE_CALL_RVA  0x000A0961UL
+#define PRM_EFFECT_QUEUE_TARGET_RVA 0x000A0550UL
+#define PRM_DRAG_SPRITE_CALL_RVA   0x003404CAUL
+#define PRM_DRAG_SPRITE_TARGET_RVA 0x00227BC0UL
+#define PRM_COMBAT_DRAW_CALL_RVA   0x00314FE9UL
+#define PRM_COMBAT_DRAW_TARGET_RVA 0x00315000UL
+#define PRM_NUM_EFFECT_VTABLE_RVA  0x00950D1CUL
+#define PRM_MSG_EFFECT_VTABLE_RVA  0x00958930UL
 #define PRM_BUFF_HOVER_CALL_RVA    0x00341A30UL
 #define PRM_BUFF_HOVER_TARGET_RVA  0x0035BF60UL
 #define PRM_MINIMAP_DRAW_TARGET_RVA 0x00331E70UL
@@ -1650,6 +1660,11 @@ static PFN_WindowOverlayDraw g_owner_overlay_draw,g_owner_special_draw,g_owner_m
 static PFN_WindowBackgroundDraw g_owner_background_draw;
 typedef DWORD (__attribute__((thiscall)) *PFN_BuffHover)(void*,LONG,LONG);
 static PFN_BuffHover g_owner_buff_hover;
+static PFN_WindowOverlayDraw g_owner_buff_draw;
+static PFN_CursorDraw g_owner_drag_sprite;
+typedef DWORD (__attribute__((thiscall)) *PFN_CombatDraw)(void*,void*,DWORD);
+static PFN_CombatDraw g_owner_combat_draw;
+static DWORD g_owner_buff_icons,g_owner_drag_icons,g_owner_combat_sprites;
 static DWORD g_owner_buff_scene,g_owner_buff_scene_vtable,g_owner_buff_object,g_owner_buff_vtable;
 void* g_owner_bitmap_primary_continue;
 void* g_owner_bitmap_alternate_continue;
@@ -2476,12 +2491,30 @@ static int owner_is_transient_tooltip(DWORD obj) {
     return manager && mem_readable((BYTE*)(ULONG_PTR)manager+0x1c,4) &&
            *(DWORD*)((BYTE*)(ULONG_PTR)manager+0x1c)==obj;
 }
+static int owner_effect_ui_active(void) {
+    return g_owner_bitmap_hooks_installed && g_owner_submit_enabled && g_owner_scale_enabled &&
+           g_ui_enabled && g_ui_runtime_enabled;
+}
+static void owner_buff_anchor(float* ax,float* ay) {
+    *ax=(float)g_ui_screen_w; *ay=0.0f;
+    if(g_ui_anchor_mode==0) { *ax=(float)g_ui_origin_x; *ay=(float)g_ui_origin_y; }
+    else if(g_ui_anchor_mode==2) { *ax=(float)g_ui_screen_w*0.5f; *ay=(float)g_ui_screen_h*0.5f; }
+}
+static void owner_buff_hover_point(LONG* x,LONG* y) {
+    POINT raw; float ax,ay,s;
+    if(!owner_effect_ui_active() || !g_input_enabled || !g_input_runtime_enabled ||
+       !g_owner_input_remap_enabled || !input_read_raw_point(&raw,0)) return;
+    owner_buff_anchor(&ax,&ay); s=ui_scale_factor();
+    *x=(LONG)(ax+((float)raw.x-ax)/s);
+    *y=(LONG)(ay+((float)raw.y-ay)/s);
+}
 /* VA 75BF60 owns buff explanations at scene+5E8, separately from the
  * ordinary tooltip controller and actor speech. Observe that exact producer;
  * the shared UITransBalloonText class alone cannot identify its attachment. */
 static DWORD __attribute__((thiscall)) owner_buff_hover_scoped(void* self,LONG x,LONG y) {
     DWORD rv=0,obj; BYTE* scene=(BYTE*)self;
     g_owner_buff_scene=g_owner_buff_scene_vtable=g_owner_buff_object=g_owner_buff_vtable=0;
+    owner_buff_hover_point(&x,&y);
     if(g_owner_buff_hover) rv=g_owner_buff_hover(self,x,y);
     if(!scene || !mem_readable(scene,4) || !mem_readable(scene+0x5e8,4)) return rv;
     obj=*(DWORD*)(scene+0x5e8);
@@ -2867,7 +2900,7 @@ static void owner_bitmap_forget(OwnerBitmapDrawRec* r) {
 static void owner_bitmap_note_vertices(const void* verts, DWORD nverts, const OwnerBitmapScope* scope) {
     DWORD i,j,k,bucket; int slot=-1,owned=scope && scope->object_ptr;
     if(!verts) return;
-    if(owned && (nverts!=4 || !mem_readable(verts,128))) { ++g_owner_bitmap_unsupported; owned=0; }
+    if(owned && ((nverts!=3 && nverts!=4) || !mem_readable(verts,nverts*32))) { ++g_owner_bitmap_unsupported; owned=0; }
     bucket=owner_bitmap_bucket(verts);
     owner_bitmap_registry_lock();
     for(i=0;i<OWNER_BITMAP_PROBES;++i) {
@@ -2887,7 +2920,7 @@ static void owner_bitmap_note_vertices(const void* verts, DWORD nverts, const Ow
             r->ax=scope->ax; r->ay=scope->ay; r->native_size=scope->native_size;
             r->fit_scale=scope->fit_scale;
             r->offset_x=scope->offset_x; r->offset_y=scope->offset_y;
-            for(j=0;j<4;++j) {
+            for(j=0;j<nverts;++j) {
                 const DWORD* v=(const DWORD*)((const BYTE*)verts+j*32);
                 for(k=0;k<4;++k) r->fields[j][k]=v[k];
                 r->fields[j][4]=v[6]; r->fields[j][5]=v[7];
@@ -2942,6 +2975,62 @@ static void __attribute__((thiscall)) owner_bitmap_queue_scoped(void* self, void
     if(g_owner_bitmap_submit) g_owner_bitmap_submit(self,primitive,flags);
 }
 
+/* These sprites are not UIWindow instances. Scope only the proven buff
+ * producer; ordinary flat effects go through the same renderer unowned. */
+static DWORD __attribute__((thiscall)) owner_buff_draw_scoped(void* self) {
+    OwnerBitmapScope saved=g_owner_bitmap_scope; BYTE* p=(BYTE*)self; DWORD rv=0;
+    g_owner_bitmap_scope=(OwnerBitmapScope){0};
+    if(owner_effect_ui_active() && p && mem_readable(p,0x3e1) && p[0x3e0]==0x62 &&
+       *(DWORD*)(p+0x1bc)==0x201 && *(DWORD*)(p+0x1d4)==4 && g_GetCurrentThreadId) {
+        g_owner_bitmap_scope.object_ptr=(DWORD)(ULONG_PTR)self;
+        g_owner_bitmap_scope.vtable_ptr=*(DWORD*)p;
+        g_owner_bitmap_scope.thread=g_GetCurrentThreadId();
+        owner_buff_anchor(&g_owner_bitmap_scope.ax,&g_owner_bitmap_scope.ay);
+        g_owner_bitmap_scope.fit_scale=ui_scale_factor();
+        ++g_owner_buff_icons; ++g_owner_bitmap_frame_calls;
+    }
+    if(g_owner_buff_draw) rv=g_owner_buff_draw(self);
+    g_owner_bitmap_scope=saved;
+    return rv;
+}
+/* VA 7404CA draws the scene's dragged item/skill ACT, not the cursor ACT.
+ * Generate it at physical mouse coordinates and scale ACT offsets natively;
+ * its queue remains unowned so it cannot receive a second UI transform. */
+static void __attribute__((thiscall)) owner_drag_sprite_scoped(void* self,LONG x,LONG y,
+    void* act,void* spr,DWORD action,DWORD frame,float scale,float rotation,DWORD color,DWORD flags) {
+    OwnerBitmapScope saved=g_owner_bitmap_scope; POINT raw;
+    g_owner_bitmap_scope=(OwnerBitmapScope){0};
+    if(owner_effect_ui_active() && input_read_raw_point(&raw,0)) {
+        x=raw.x; y=raw.y; scale*=ui_scale_factor(); ++g_owner_drag_icons;
+    }
+    if(g_owner_drag_sprite) g_owner_drag_sprite(self,x,y,act,spr,action,frame,scale,rotation,color,flags);
+    g_owner_bitmap_scope=saved;
+}
+/* CNumEffect and the numeric CMsgEffect variants use the normal actor ACT
+ * renderer. Enlarge only its local sprite scale, after world placement has
+ * been chosen; never scale the projected screen position or animation state. */
+static int owner_is_combat_text(void* self) {
+    BYTE* p=(BYTE*)self; DWORD vt,kind;
+    if(!p || !g_exe || !mem_readable(p,0x54)) return 0;
+    vt=*(DWORD*)p-(DWORD)(ULONG_PTR)g_exe;
+    if(vt==PRM_NUM_EFFECT_VTABLE_RVA) return 1;
+    if(vt!=PRM_MSG_EFFECT_VTABLE_RVA || !mem_readable(p+0x1a0,4)) return 0;
+    kind=*(DWORD*)(p+0x1a0);
+    return kind==14 || kind==16 || kind==21 || kind==22 || kind==114;
+}
+static DWORD __attribute__((thiscall)) owner_combat_draw_scoped(void* self,void* view,DWORD flags) {
+    DWORD rv=0; float original=0.0f; int scaled=0;
+    if(g_owner_combat_draw && owner_effect_ui_active() && owner_is_combat_text(self)) {
+        original=*(float*)((BYTE*)self+0x50);
+        if(original>0.0f && original<100.0f) {
+            *(float*)((BYTE*)self+0x50)=original*ui_scale_factor(); scaled=1; ++g_owner_combat_sprites;
+        }
+    }
+    if(g_owner_combat_draw) rv=g_owner_combat_draw(self,view,flags);
+    if(scaled) *(float*)((BYTE*)self+0x50)=original;
+    return rv;
+}
+
 static int owner_bitmap_patch_span_valid(DWORD rva, BYTE slot) {
     BYTE* p=(BYTE*)g_exe+rva;
     return g_exe && g_exe_size>=rva+6 && p[0]==0xff && p[1]==0x53 && p[2]==slot &&
@@ -2981,6 +3070,10 @@ static void install_owner_bitmap_hooks(void) {
        !owner_bitmap_patch_span_valid(PRM_BITMAP_ALTERNATE_RVA,0x0c) ||
        !validated_rel_call(PRM_BITMAP_QUEUE_CALL_RVA,PRM_BITMAP_QUEUE_TARGET_RVA) ||
        !validated_rel_call(PRM_BUFF_HOVER_CALL_RVA,PRM_BUFF_HOVER_TARGET_RVA) ||
+       !validated_rel_call(PRM_BUFF_DRAW_CALL_RVA,PRM_BUFF_DRAW_TARGET_RVA) ||
+       !validated_rel_call(PRM_EFFECT_QUEUE_CALL_RVA,PRM_EFFECT_QUEUE_TARGET_RVA) ||
+       !validated_rel_call(PRM_DRAG_SPRITE_CALL_RVA,PRM_DRAG_SPRITE_TARGET_RVA) ||
+       !validated_rel_call(PRM_COMBAT_DRAW_CALL_RVA,PRM_COMBAT_DRAW_TARGET_RVA) ||
        !validated_rel_call(PRM_OVERLAY_DRAW_CALL_RVA,PRM_OVERLAY_DRAW_TARGET_RVA) ||
        !validated_rel_call(PRM_OVERLAY_QUEUE_CALL_RVA,PRM_OVERLAY_QUEUE_TARGET_RVA) ||
        !validated_rel_call(PRM_MAP_DRAW_CALL_RVA,PRM_MAP_DRAW_TARGET_RVA) ||
@@ -3005,12 +3098,16 @@ static void install_owner_bitmap_hooks(void) {
     g_owner_minimap_draw=(PFN_WindowOverlayDraw)(base+PRM_MINIMAP_DRAW_TARGET_RVA);
     g_owner_background_draw=(PFN_WindowBackgroundDraw)(base+PRM_BACKGROUND_DRAW_TARGET_RVA);
     g_owner_buff_hover=(PFN_BuffHover)(base+PRM_BUFF_HOVER_TARGET_RVA);
+    g_owner_buff_draw=(PFN_WindowOverlayDraw)(base+PRM_BUFF_DRAW_TARGET_RVA);
+    g_owner_drag_sprite=(PFN_CursorDraw)(base+PRM_DRAG_SPRITE_TARGET_RVA);
+    g_owner_combat_draw=(PFN_CombatDraw)(base+PRM_COMBAT_DRAW_TARGET_RVA);
     g_owner_tooltip_clock=*(PFN_GetTickCount*)(base+PRM_TOOLTIP_CLOCK_IAT_RVA);
     g_owner_bitmap_primary_continue=base+PRM_BITMAP_PRIMARY_RVA+6;
     g_owner_bitmap_alternate_continue=base+PRM_BITMAP_ALTERNATE_RVA+6;
     /* Install queue consumers first. If a later patch fails, scope remains off
        and all wrappers forward their original calls without assigning owners. */
     if(owner_submit_patch_rel_call(base+PRM_BITMAP_QUEUE_CALL_RVA,(void*)owner_bitmap_queue_scoped) &&
+       owner_submit_patch_rel_call(base+PRM_EFFECT_QUEUE_CALL_RVA,(void*)owner_bitmap_queue_scoped) &&
        owner_submit_patch_rel_call(base+PRM_OVERLAY_QUEUE_CALL_RVA,(void*)owner_bitmap_queue_scoped) &&
        owner_submit_patch_rel_call(base+PRM_RECT_QUEUE_CALL_RVA,(void*)owner_bitmap_queue_scoped) &&
        owner_submit_patch_rel_call(base+PRM_IMAGE_QUEUE_CALL_RVA,(void*)owner_bitmap_queue_scoped) &&
@@ -3025,13 +3122,16 @@ static void install_owner_bitmap_hooks(void) {
        owner_submit_patch_rel_call(base+PRM_OVERLAY_DRAW_CALL_RVA,(void*)owner_overlay_draw_scoped) &&
        owner_submit_patch_rel_call(base+PRM_SPECIAL_DRAW_CALL_RVA,(void*)owner_special_draw_scoped) &&
        owner_submit_patch_rel_call(base+PRM_BACKGROUND_DRAW_CALL_RVA,(void*)owner_background_thunk) &&
+       owner_submit_patch_rel_call(base+PRM_BUFF_DRAW_CALL_RVA,(void*)owner_buff_draw_scoped) &&
+       owner_submit_patch_rel_call(base+PRM_DRAG_SPRITE_CALL_RVA,(void*)owner_drag_sprite_scoped) &&
+       owner_submit_patch_rel_call(base+PRM_COMBAT_DRAW_CALL_RVA,(void*)owner_combat_draw_scoped) &&
        owner_submit_patch_rel_call(base+PRM_BUFF_HOVER_CALL_RVA,(void*)owner_buff_hover_scoped) &&
        owner_patch_indirect_call(base+PRM_ALT_BACKGROUND_RVA,(void*)owner_alternate_background_scoped) &&
        owner_patch_indirect_call(base+PRM_TOOLTIP_REFRESH_RVA,(void*)owner_tooltip_refresh_thunk) &&
        vtrace_patch_rel_jmp(base+PRM_BITMAP_PRIMARY_RVA,6,(void*)owner_bitmap_primary_thunk) &&
        vtrace_patch_rel_jmp(base+PRM_BITMAP_ALTERNATE_RVA,6,(void*)owner_bitmap_alternate_thunk)) {
         g_owner_bitmap_hooks_installed=1;
-        log_line("OwnerBitmap hooks: OK bitmap=2 background=2 tooltipRefresh=1 buff=1 overlay=1 special=1 map=1 minimap=1 queue=10 offscreen=2");
+        log_line("OwnerBitmap hooks: OK bitmap=2 background=2 tooltipRefresh=1 buff=2 drag=1 combat=1 overlay=1 special=1 map=1 minimap=1 queue=11 offscreen=2");
     } else log_line("OwnerBitmap hooks: patch failed; owner scopes disabled");
 }
 
@@ -3839,6 +3939,9 @@ static void maybe_dump_owner_windows(void) {
     s_append(line,sizeof(line)," mismatched="); s_append_uint(line,sizeof(line),g_cursor_mismatched);
     s_append(line,sizeof(line)," overflow="); s_append_uint(line,sizeof(line),g_cursor_overflow);
     s_append(line,sizeof(line)," peak="); s_append_uint(line,sizeof(line),g_cursor_peak); log_line(line);
+    line[0]=0; s_append(line,sizeof(line)," EffectUI buffIcons="); s_append_uint(line,sizeof(line),g_owner_buff_icons);
+    s_append(line,sizeof(line)," dragIcons="); s_append_uint(line,sizeof(line),g_owner_drag_icons);
+    s_append(line,sizeof(line)," combatSprites="); s_append_uint(line,sizeof(line),g_owner_combat_sprites); log_line(line);
     line[0]=0; s_append(line,sizeof(line)," OwnerBitmap hooks="); s_append_uint(line,sizeof(line),(DWORD)g_owner_bitmap_hooks_installed);
     s_append(line,sizeof(line)," calls="); s_append_uint(line,sizeof(line),g_owner_bitmap_calls);
     s_append(line,sizeof(line)," submits="); s_append_uint(line,sizeof(line),g_owner_bitmap_submits);
@@ -5042,7 +5145,7 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Version 1.0.1-dev (world effect isolation) ===");
+    log_line("=== PRM UI FIX Version 1.0.1-dev (buff and combat sprites) ===");
     log_line("Proxy DLL loaded");
     ui_hotkeys_load();
     if (g_GetPrivateProfileIntA) {

@@ -10,6 +10,11 @@ import test_bitmap as bitmap
 prefix = background.prefix + r'''
 typedef DWORD (__attribute__((thiscall)) *PFN_BuffHover)(void*,LONG,LONG);
 static PFN_BuffHover g_owner_buff_hover;
+static int g_owner_input_remap_enabled=1,raw_available;
+static POINT raw_point;
+static int input_read_raw_point(POINT* out,RECT* rect) {
+    if(!raw_available) return 0; *out=raw_point; return 1;
+}
 static DWORD g_owner_buff_scene,g_owner_buff_scene_vtable,g_owner_buff_object,g_owner_buff_vtable;
 '''
 stubs = background.replace_function(background.stubs, 'owner_is_buff_tooltip',
@@ -17,7 +22,7 @@ stubs = background.replace_function(background.stubs, 'owner_is_buff_tooltip',
 stubs = background.replace_function(stubs, 'owner_buff_popup_offset',
                                     'static void owner_buff_popup_offset(OwnerWindowState*,LONG,LONG,LONG);')
 helpers = '\n'.join(bitmap.function(n) for n in
-                    ('owner_buff_hover_scoped','owner_is_buff_tooltip','owner_buff_popup_offset'))
+                    ('owner_effect_ui_active','owner_buff_anchor','owner_buff_hover_point','owner_buff_hover_scoped','owner_is_buff_tooltip','owner_buff_popup_offset'))
 tests = background.tests.replace('int main(void)', 'int background_baseline(void)') + r'''
 static BYTE scene[0x5ec];
 static DWORD hover_calls,hover_popup;
@@ -108,9 +113,24 @@ static void oversized_and_live_scale(void) {
     for(i=0;i<4;++i) CHECK(out.f[i][0]>=-0.01f && out.f[i][0]<=1920.01f &&
                             out.f[i][1]>=-0.01f && out.f[i][1]<=1080.01f);
 }
+static void buff_hover_inverse(void) {
+    LONG x,y; int percent,mode;
+    for(percent=100;percent<=250;percent+=25) for(mode=0;mode<=2;++mode) {
+        float ax,ay,s=(float)percent/100.0f;
+        reset_all(); g_ui_scale_percent=percent; g_ui_anchor_mode=mode;
+        g_ui_screen_w=3440; g_ui_screen_h=1440; raw_available=1;
+        g_input_enabled=g_input_runtime_enabled=1;
+        owner_buff_anchor(&ax,&ay);
+        raw_point.x=(LONG)(ax+(3420-ax)*s); raw_point.y=(LONG)(ay+(180-ay)*s);
+        x=1; y=2; owner_buff_hover_point(&x,&y);
+        CHECK(abs(x-3420)<=1 && abs(y-180)<=1);
+        g_ui_runtime_enabled=0; x=11;y=22;owner_buff_hover_point(&x,&y);CHECK(x==11 && y==22);
+    }
+    raw_available=0;
+}
 int main(void) {
     CHECK(sizeof(void*)==4);
-    background_baseline(); exact_identity(); buff_box_and_text(); oversized_and_live_scale();
+    buff_hover_inverse(); background_baseline(); exact_identity(); buff_box_and_text(); oversized_and_live_scale();
     puts("PASS buff: native thiscall/return forwarding, live scene+5E8 and vtable identity, unreadable/reused rejection, first/reentry 150/200% queued box/text attachment, and separate actor-text top attachment");
     return 0;
 }

@@ -1,3 +1,35 @@
+# Buff, combat text, and drag sprite test build (1.0.1-dev)
+
+The user confirmed world-effect isolation, then reported buff icons, combat
+numbers/“Miss”, and dragged skills at native size (drag icons also displaced).
+The primary path still rejects unowned world effects. Four validated callsites
+now handle the missing non-window UI producers:
+
+- Buff draw at VA 674BA6 -> 66D6D0 owns only the native `b` marker with flags
+  0x201 and mode 4. Its two three-vertex primitives use the existing immutable
+  queue registry through VA 4A0961. Buff hover inversely maps the physical
+  cursor using the same HUD anchor as the icons and explanation popup.
+- Drag ACT draw at VA 7404CA -> 627BC0 receives physical cursor coordinates
+  and the current UI scale, preserving ACT animation/rotation/color arguments.
+- Actor ACT draw at VA 714FE9 -> 715000 enlarges CNumEffect and the proven
+  numeric CMsgEffect variants (14,16,21,22,114). The native +50 sprite scale
+  also controls digit spacing; its original value is restored after drawing.
+  World coordinates and animation updates remain native. Other message
+  effects, projectiles, summons, and actor sprites are excluded.
+
+All 25 host harnesses pass, including i386 ASan/UBSan coverage of exactly
+96-byte triangles, immutable fingerprints, shared-renderer world exclusion,
+100–250% drag/hover transforms, native call forwarding, and combat scale
+restoration. Native opcode/layout checks match PRM.exe SHA256
+`7e96f64968558b88d6fe7d4bdc7a12a15231ee30f942159babe54a9c99b1cc90`.
+In-game verification of these new paths remains pending; host fixtures cannot
+prove that every combat-label variant uses the identified producers.
+
+Installed DLL: 233984 bytes, PE32/i386, 185 exact WinMM exports, no imports.
+SHA256: `e4b180b0b11b83c3b9daeb1d9d603f88ca5eb8ff191c6aaae14676e5e094e09a`.
+Live INI and executable are unchanged. Evidence/backups are in
+`evidence/buff-combat-text-fix`, not the game folder. No public release update.
+
 # UI FIX validation
 
 ## World effects and additional UI roots (1.0.1-dev)
@@ -21,7 +53,7 @@ Native evidence was checked against PRM.exe SHA256
 `7e96f64968558b88d6fe7d4bdc7a12a15231ee30f942159babe54a9c99b1cc90`.
 The exact summon-effect draw has not been captured; the false UI classification
 is reproduced from production code and fits the user's scaling-off comparison.
-In-game verification of this new correction remains pending. Evidence is under
+The user confirmed that the summon-effect correction works; buff icons and combat/drag sprites were then reported at native size. Evidence is under
 `evidence/world-effects-fix`; installation preserves the live INI and executable.
 The public release remains unchanged.
 

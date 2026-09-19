@@ -290,7 +290,7 @@ static void fingerprint_and_reuse(void) {
     for(i=0;i<4;++i) { a.d[i][4]^=0xffffffff; a.d[i][5]^=0xffffffff; }
     CHECK(consume(&a,&ax,&ay)==1); /* Native diffuse/specular mutations are allowed. */
     tag(&a); owner_bitmap_note_vertices(&a,4,0); CHECK(!consume(&a,&ax,&ay));
-    tag(&a); owner_bitmap_note_vertices(&a,3,&g_owner_bitmap_scope); CHECK(!consume(&a,&ax,&ay));
+    tag(&a); owner_bitmap_note_vertices(&a,2,&g_owner_bitmap_scope); CHECK(!consume(&a,&ax,&ay));
     CHECK(g_owner_bitmap_unsupported==1);
     tag(&a); unreadable=&a; tag(&a); unreadable=0; CHECK(!consume(&a,&ax,&ay));
     CHECK(g_owner_bitmap_unsupported==2);
