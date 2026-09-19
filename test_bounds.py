@@ -484,6 +484,40 @@ static void test_first_hover_popup(void) {
     puts("PASS popups: exact transient/character-info classes scale on first draw and revisit, fit at edges, and never claim input");
 }
 
+static void test_shop_and_quest_roots(void) {
+    const char* classes[]={"UIMerchantShopTitle","UIQuestDisplay"};
+    const int scales[]={133,150,200};
+    const LONG positions[][2]={{700,500},{3300,1350},{-50,-10}};
+    unsigned int ci,si,pi;
+    for(ci=0;ci<2;++ci) for(si=0;si<3;++si) {
+        LONG w=ci?250:140,h=ci?400:34;
+        OwnerWindowState* st;
+        reset_all(); g_ui_screen_w=3440; g_ui_screen_h=1440; g_ui_scale_percent=scales[si];
+        CHECK(owner_class_should_hook(classes[ci]));
+        st=window(2,classes[ci]);
+        for(pi=0;pi<3;++pi) {
+            LONG x=positions[pi][0],y=positions[pi][1];
+            OwnerInputRegion region={0}; UIRectF displayed; POINT p;
+            CHECK(owner_bitmap_prepare(2,x,y,w,h));
+            CHECK(st->last_input_order && !g_owner_bitmap_scope.native_size);
+            if(!ci) {
+                CHECK(st->ax==x+w/2 && st->ay==y);
+                CHECK(!st->offset_x && !st->offset_y);
+                CHECK(st->fit_scale==(float)scales[si]*0.01f);
+            }
+            region.rect=(UIRectF){x,y,x+w,y+h}; region.ax=st->ax; region.ay=st->ay;
+            region.fit_scale=st->fit_scale; region.offset_x=st->offset_x; region.offset_y=st->offset_y;
+            owner_input_region_bounds(&region,&displayed);
+            if(ci) assert_inside(&displayed);
+            p.x=(LONG)lroundf((displayed.l+displayed.r)*0.5f);
+            p.y=(LONG)lroundf((displayed.t+displayed.b)*0.5f);
+            CHECK(owner_input_map_region(&p,&region));
+            CHECK(labs(p.x-(x+w/2))<=1 && labs(p.y-(y+h/2))<=1);
+            ++g_ui_present_serial;
+        }
+    }
+    puts("PASS additional roots: merchant signs follow actor top-center with clickable inverse coordinates; quest tracker fits on screen and stays interactive");
+}
 static void test_actor_speech_top_center(void) {
     static const int scales[]={100,133,150,165,175,200};
     static const LONG moves[][4]={
@@ -725,6 +759,7 @@ int main(void) {
     test_independent_roots();
     test_first_hover_popup();
     test_actor_speech_top_center();
+    test_shop_and_quest_roots();
     test_native_clamp_preserves_requested_origin();
     test_native_clamp_then_scaled_fit();
     test_moving_player_gauge();

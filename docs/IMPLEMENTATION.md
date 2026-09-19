@@ -1,10 +1,8 @@
 # PRM UI FIX implementation notes
 
-Version 1.0. These notes describe the native client paths and the implemented
-ownership rules in the refreshed release. For installation and settings, see
-[README](../README.md) and [validation](../VALIDATION.md). The release binary
-uses the same behavioral code as the tested build; only version labels changed
-for the release rebuild.
+Version 1.0.1-dev. These notes include the development corrections after the
+refreshed 1.0 release. For installation, settings and manual-test status, see
+[README](../README.md) and [validation](../VALIDATION.md).
 
 The supported installation places `winmm.dll` and `prm-ui-fix.ini` beside
 `PRM.exe`. Close the game before replacing either file and restart it after
@@ -66,7 +64,33 @@ Cursor-following descriptions receive a fresh edge correction, so an old offset
 does not detach them from the pointer. World-attached descriptions, room titles
 and hover names retain their accepted actor attachment rules. Native-size
 fullscreen UI remains under its previous policy rather than the movable-window
-fit policy. The geometry fallback is unchanged.
+fit policy. Geometry-based rendering/input is now confined to legacy mode.
+
+## World effects and unidentified draws
+
+The native world renderer can submit flat screen-space quads with the same
+FVF, depth, reciprocal-W and UV layout as UI. The old geometry fallback could
+group these draws and enlarge them around a screen anchor even with primary
+bitmap ownership active. A regression fixture reproduces an unowned white
+quad moving from (400,300) to (800,600) at 200% when a group matches it.
+
+With the primary hooks installed, only a matching copied owner record permits
+UI scaling. Unidentified, consumed, expired or mismatched records return the
+original vertices before geometry collection/matching. Color and shape are
+not classifiers. Native-size owners, offscreen composition and cursor handling
+retain their existing rules. The matching input guard also ignores legacy
+groups, including stale ones, so an effect cannot create a phantom UI region.
+The explicit legacy mode still supports its original geometry comparison path.
+
+The same audit found two manager roots excluded by the naming heuristic:
+UIMerchantShopTitle and UIQuestDisplay. Merchant buy/sell signs use actor fields
++268/+270 and a live top-center attachment (719996..99C0, 721167..1191). They
+remain clickable through the same inverse transform. UIQuestDisplay is the
+manager's +3EC quest tracker, constructed at 5FFAC0 and registered at 5FFB1A;
+it uses ordinary screen anchoring, fitting and input. UICustomGageBar,
+UIItemMoveInfo and UIString creation paths instead add child controls through
+B1B6F0 and retain their enclosing window's transform. Native evidence for the
+two additional roots is checked by verify_hooks.py.
 
 The configured overlay shortcut (Shift+P by default) toggles a settings panel drawn into the game frame. The existing game HWND
 receives a subclass that queues keyboard commands. The present thread owns the

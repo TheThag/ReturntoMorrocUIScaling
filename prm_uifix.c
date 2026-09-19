@@ -1714,6 +1714,9 @@ static int owner_class_should_hook(const char* n) {
     if(!n || !n[0]) return 0;
     if(owner_class_is_hover_popup(n)) return 1;
     if(owner_class_is_world_label(n) || owner_class_is_world_title(n) || owner_class_is_world_name(n)) return 1;
+    /* Direct UIWindow roots verified at manager factories 719920/7210F1
+       (actor buy/sell signs) and 5FFAC0 (screen-attached quest tracker). */
+    if(s_equal(n,"UIMerchantShopTitle") || s_equal(n,"UIQuestDisplay")) return 1;
     if(n[0]=='U' && n[1]=='I' && (s_contains(n,"Wnd") || s_contains(n,"Window"))) return 1;
     if(s_contains(n,"EquipWnd") || s_contains(n,"Inventory") || s_contains(n,"Skill")) return 1;
     return 0;
@@ -2605,7 +2608,8 @@ static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
     buff=s_equal(st->class_name,"UITransBalloonText") && owner_is_buff_tooltip(obj);
     world_label=owner_class_is_world_label(st->class_name);
     world_title=owner_class_is_world_title(st->class_name);
-    world_text=s_equal(st->class_name,"UITransBalloonText") && !buff && !owner_is_transient_tooltip(obj);
+    world_text=(s_equal(st->class_name,"UITransBalloonText") && !buff && !owner_is_transient_tooltip(obj)) ||
+        s_equal(st->class_name,"UIMerchantShopTitle");
     world_name=owner_class_is_world_name(st->class_name);
     native_size=!buff && !world_label && !world_title && !world_text && !world_name && rect_is_global(&whole) && !g_ui_scale_global;
     /* The character-info factory deliberately parks its registered popup at
@@ -2619,6 +2623,8 @@ static int owner_bitmap_prepare(DWORD obj, LONG x, LONG y, LONG w, LONG h) {
            bitmap's bottom pointer (VA 4E6E34..5B) stays at the native position.
            Actor UITransBalloonText at 719DDE..9E14 and 862121..2161 instead
            subtracts half-width only: its projected attachment is top-center.
+           Merchant buy/sell signs use the same top-center placement at
+           719996..99C0 and 721167..1191, and remain interactive.
            Player gauges use the live centered bitmap as well (VA 742788).
            Hover names have several native layout modes (VA 73D3D0), no pointer.
            Keep their live bitmap center fixed without changing native placement. */
@@ -4673,7 +4679,14 @@ static const void* make_scaled_ui_vertices(DWORD prim, DWORD fvf, const void* ve
         /* Exact native provenance remains valid at the screen edge. Applying
            the fallback XY bounds per tile would split a partly offscreen window. */
         if(!g_ui_enabled || !g_ui_runtime_enabled) return verts;
-    } else if(!looks_like_ui_vertices(prim,fvf,verts,nverts)) return verts;
+    } else {
+        /* World flashes/sprites can have the same XYZRHW, UVs and depth as
+           cached UI. In the primary path only a copied native owner proves
+           a UI draw; geometry groups must never move an unidentified effect.
+           Keep heuristic scaling exclusively in the explicit legacy path. */
+        if(g_owner_bitmap_hooks_installed) return verts;
+        if(!looks_like_ui_vertices(prim,fvf,verts,nverts)) return verts;
+    }
     vtrace_note_d3d_ui();
     stride=fvf_stride(fvf); bytes=stride*nverts; if(bytes>scratch_cap) return verts;
     for(i=0;i<nverts;++i) {
@@ -4746,6 +4759,9 @@ static int remap_ui_point(POINT* p) {
     DWORD i; int found=-1; float best_area=999999999.0f, px,py;
     UIGroup group;
     if(!p || !g_input_enabled || !g_input_runtime_enabled || !g_ui_runtime_enabled) return 0;
+    /* Match the primary renderer's ownership boundary, including any stale
+       fallback groups left from an earlier frame or comparison mode. */
+    if(g_owner_bitmap_hooks_installed) return 0;
     px=(float)p->x;py=(float)p->y;
     ui_group_lock();
     for(i=0;i<g_ui_prev_member_count;++i) {
@@ -5026,7 +5042,7 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Version 1.0.1-dev (actor combat UI) ===");
+    log_line("=== PRM UI FIX Version 1.0.1-dev (world effect isolation) ===");
     log_line("Proxy DLL loaded");
     ui_hotkeys_load();
     if (g_GetPrivateProfileIntA) {

@@ -1,5 +1,34 @@
 # UI FIX validation
 
+## World effects and additional UI roots (1.0.1-dev)
+
+The user confirmed the preceding actor health/cast correction and reported a
+misplaced summon flash that aligns correctly when UI scaling is disabled.
+The primary renderer now requires exact native UI ownership before scaling a
+draw. Geometry fallback can no longer transform world effects or supply their
+mouse regions. Explicit legacy mode remains available.
+
+The regression harness reproduces the old erroneous white-quad displacement
+and verifies unchanged unowned vertices at 100%, 133%, 150%, 200% and 300%,
+with matching groups and ScaleUnmatched both enabled and disabled. It checks
+identical owned geometry still scales, record expiry/reuse, and stale-group
+input isolation. Additional checks cover newly admitted merchant buy/sell
+signs and the quest tracker, with actor attachment, screen fitting and inverse
+click coordinates. Existing actor gauges, maps, tooltips and chat-room titles
+retain their regression coverage.
+
+Native evidence was checked against PRM.exe SHA256
+`7e96f64968558b88d6fe7d4bdc7a12a15231ee30f942159babe54a9c99b1cc90`.
+The exact summon-effect draw has not been captured; the false UI classification
+is reproduced from production code and fits the user's scaling-off comparison.
+In-game verification of this new correction remains pending. Evidence is under
+`evidence/world-effects-fix`; installation preserves the live INI and executable.
+The public release remains unchanged.
+
+All 24 host harnesses and native verification pass. Test DLL: 230400
+bytes, PE32/i386, 185 exact WinMM exports, no static imports/IAT/delay imports.
+SHA256: `8d2ad825dcc83210644285d42e5c987d76613f682974a0a8dc1ac3f6685d45b8`.
+
 ## Actor combat UI test build (1.0.1-dev)
 
 The development build adds independent bitmap ownership for other players'
@@ -19,8 +48,8 @@ Native hook/layout verification uses the current installed executable SHA256
 The executable is not modified. Test evidence is under
 `evidence/actor-bars-fix` outside the game folder.
 
-In-game verification of other actors' health/cast bars and spell names is
-pending. The public 1.0 release remains unchanged. The local test installation
+The user confirmed other actors' health/cast bars and spell names were fixed.
+The public 1.0 release remains unchanged. The local test installation
 preserves the existing INI, including the user's scale and shortcuts.
 
 Test DLL: 230400 bytes, PE32/i386, 185 exact WinMM exports, no static imports,

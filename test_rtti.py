@@ -347,7 +347,7 @@ static void test_balloon_and_explicit_families(void) {
     const char *special[]={
         "UITransBalloonText", "UICharInfoBalloonText", "CSignBoardWnd",
         "UIPlayerGage", "UIPcGage", "UIMonsterGage", "UIRechargeGage", "UIChatRoomTitle", "UINameBalloonText",
-        "UIVerticalNameBalloonText"
+        "UIVerticalNameBalloonText", "UIMerchantShopTitle", "UIQuestDisplay"
     };
     unsigned int i;
     clear_fixture();
@@ -383,7 +383,7 @@ static void test_balloon_and_explicit_families(void) {
     }
     {
         static const char *excluded[]={
-            "CBmpObjWnd", "UIBarGraphPlayer", "UIMerchantShopTitle", "UIGage", "UIColorTransBalloonText"
+            "CBmpObjWnd", "UIBarGraphPlayer", "UICustomGageBar", "UIGage", "UIColorTransBalloonText"
         };
         for (i=0; i<sizeof(excluded)/sizeof(excluded[0]); ++i) {
             RttiCase c=build_case(24+i,excluded[i],3);

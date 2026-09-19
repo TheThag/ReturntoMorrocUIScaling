@@ -52,6 +52,7 @@ types += "\n" + "\n".join(constant(name) for name in (
 ))
 production = "\n".join(function(name) for name in (
     "f_abs", "fvf_stride", "ui_scale_factor", "rect_is_global", "choose_group_anchor",
+    "rect_contains_point", "rect_area", "transform_bounds", "remap_ui_point",
     "owner_class_is_hover_popup", "owner_class_is_world_label", "owner_class_is_world_title", "owner_class_is_world_name", "owner_class_should_hook",
     "owner_input_touch_state", "owner_fit_rect", "owner_bitmap_prepare",
     "owner_map_native_identity", "owner_map_fullscreen_visible", "owner_map_occludes_world_name",
@@ -68,11 +69,13 @@ prefix = r"""
 #include <stdlib.h>
 #include <math.h>
 typedef uint32_t DWORD;
+typedef uint16_t WORD;
 typedef int32_t LONG;
 typedef unsigned char BYTE;
 typedef uintptr_t ULONG_PTR;
 typedef struct { float l,t,r,b; } UIRectF;
 typedef struct { LONG left,top,right,bottom; } RECT;
+typedef struct { LONG x,y; } POINT;
 typedef LONG HRESULT;
 typedef DWORD (*PFN_BitmapDraw)(void*,LONG,LONG,LONG,LONG,DWORD);
 typedef HRESULT (*PFN_DDS7_BltFast)(void*,DWORD,DWORD,void*,RECT*,DWORD);
@@ -98,13 +101,22 @@ static int mem_readable(const void* p,DWORD n) { return p && p!=unreadable && n<
 static int s_contains(const char* s,const char* p) { return strstr(s,p)!=0; }
 static int s_equal(const char* a,const char* b) { return strcmp(a,b)==0; }
 """
+prefix += struct_type("UIGroup") + "\n" + struct_type("UIGroupMember") + r"""
+static UIGroup g_ui_prev_groups[1];
+static UIGroupMember g_ui_prev_members[1];
+static DWORD g_ui_prev_group_count,g_ui_prev_member_count,g_ui_mapped_mouse;
+static int g_input_enabled,g_input_runtime_enabled;
+static void ui_group_lock(void) {}
+static void ui_group_unlock(void) {}
+"""
 
 stubs = r"""
 /* Host object identities are small IDs; production state and behavior remain
    unchanged after the native object/RTTI lookup boundary. */
 static OwnerWindowState states[8];
 static DWORD fallback_collected,legacy_matches,legacy_collected,trace_calls;
-static int legacy_match_result;
+static int legacy_match_result,group_match_result;
+static DWORD group_matches;
 static OwnerWindowState* owner_state_for(DWORD obj,int create) {
     OwnerWindowState* st;
     if(!obj || obj>=8) return 0;
@@ -147,7 +159,7 @@ static void collect_ui_rect(float a,float b,float c,float d) {
     (void)a;(void)b;(void)c;(void)d; ++fallback_collected;
 }
 static int get_group_transform_for_rect(const UIRectF* r,float* ax,float* ay) {
-    (void)r;(void)ax;(void)ay; return 0;
+    (void)r; ++group_matches; *ax=0; *ay=0; return group_match_result;
 }
 static SurfHookRec surface_rec;
 static DWORD present_notifications;
@@ -186,7 +198,10 @@ static void reset(void) {
     g_ui_global_threshold_percent=75; g_ui_scale_percent=133;
     g_owner_tagged_draws=g_ui_scaled_draws=0;
     fallback_collected=legacy_matches=legacy_collected=trace_calls=0;
-    legacy_match_result=0; unreadable=0; g_GetCurrentThreadId=thread_id;
+    legacy_match_result=group_match_result=0; group_matches=0;
+    g_ui_prev_group_count=g_ui_prev_member_count=g_ui_mapped_mouse=0;
+    g_input_enabled=g_input_runtime_enabled=1;
+    unreadable=0; g_GetCurrentThreadId=thread_id;
     g_ui_frame_rect_count=g_owner_frame_member_count=present_notifications=0;
     surface_rec.orig_bltfast=0;
 }
@@ -354,7 +369,7 @@ static void scaler_integration(void) {
     tag(&a); g_ui_runtime_enabled=0; CHECK(scale(&a,&out,0)==&a);
     CHECK(g_owner_bitmap_matched==1 && !g_owner_bitmap_active_count && !fallback_collected);
     g_ui_runtime_enabled=1; CHECK(scale(&a,&out,0)==&a);
-    CHECK(fallback_collected==1 && !legacy_matches);
+    CHECK(!fallback_collected && !legacy_matches);
     tag(&a); g_ui_enabled=0; CHECK(scale(&a,&out,0)==&a);
     CHECK(!g_owner_bitmap_active_count); g_ui_enabled=1;
     for(i=0;i<2;++i) {
@@ -374,6 +389,51 @@ static void scaler_integration(void) {
     CHECK(!g_owner_bitmap_active_count);
     CHECK(owner_bitmap_prepare(1,10,20,100,100) && !g_owner_bitmap_scope.native_size);
     CHECK(states[1].last_input_order); /* Resized normal window becomes interactive. */
+}
+static void unowned_world_draws(void) {
+    static const int scales[]={100,133,150,200,300};
+    Quad flash,before,out; unsigned int i,j; int unmatched,matched;
+    for(i=0;i<sizeof(scales)/sizeof(scales[0]);++i)
+    for(unmatched=0;unmatched<2;++unmatched) for(matched=0;matched<2;++matched) {
+        reset(); g_ui_scale_percent=scales[i]; g_ui_scale_unmatched=unmatched;
+        group_match_result=matched; legacy_match_result=1;
+        quad(&flash,400,300,96,128);
+        for(j=0;j<4;++j) flash.d[j][4]=0xffffffffUL;
+        before=flash;
+        CHECK(looks_like_ui_vertices(5,0x1c4,&flash,4));
+        CHECK(scale(&flash,&out,0)==&flash);
+        CHECK(!memcmp(&before,&flash,sizeof(flash)));
+        CHECK(!fallback_collected && !group_matches && !legacy_matches && !g_ui_scaled_draws);
+        /* Identical geometry is UI only when the native manager queued it
+           with an owner. A bright UI quad must still enlarge normally. */
+        CHECK(owner_bitmap_prepare(2,400,300,96,128)); tag(&flash);
+        CHECK(scale(&flash,&out,0)==&out);
+        transformed(&before,&out,states[2].ax,states[2].ay);
+        /* A consumed, mismatched, expired or absent identity cannot send
+           the same allocation back into geometry-based world scaling. */
+        CHECK(scale(&flash,&out,0)==&flash);
+        tag(&flash); flash.f[0][0]+=1.0f; before=flash;
+        CHECK(scale(&flash,&out,0)==&flash && !memcmp(&before,&flash,sizeof(flash)));
+        tag(&flash); g_ui_present_serial+=3;
+        CHECK(scale(&flash,&out,0)==&flash);
+        CHECK(!fallback_collected && !group_matches && !legacy_matches);
+    }
+    /* Explicit legacy mode retains its historical group transform. */
+    reset(); g_owner_bitmap_hooks_installed=0; group_match_result=1;
+    quad(&flash,400,300,96,128); CHECK(scale(&flash,&out,0)==&out);
+    transformed(&flash,&out,0,0); CHECK(fallback_collected==1 && group_matches==1);
+    /* Stale groups must not redirect pointer input in primary mode. */
+    reset(); g_ui_scale_percent=200;
+    g_ui_prev_groups[0]=(UIGroup){100,100,180,180,0,0,0,1};
+    g_ui_prev_members[0].rect=(UIRectF){100,100,180,180};
+    g_ui_prev_members[0].group_index=0;
+    g_ui_prev_group_count=g_ui_prev_member_count=1;
+    { POINT p={240,260};
+      CHECK(!remap_ui_point(&p) && p.x==240 && p.y==260 && !g_ui_mapped_mouse);
+      g_owner_bitmap_hooks_installed=0;
+      CHECK(remap_ui_point(&p) && p.x==120 && p.y==130 && g_ui_mapped_mouse==1);
+    }
+    puts("PASS world isolation: UI-like white effects stay byte-identical without owner provenance; owned draws scale, stale groups cannot map input, explicit legacy mode remains available");
 }
 static void npc_world_labels(void) {
     Quad plaque,before,out,tiles[3]; DWORD i; OwnerWindowState* st;
@@ -586,7 +646,7 @@ static void presentation_activity(void) {
 int main(void) {
     split_tiles(); offscreen_tiles(); overlap_and_identity(); fingerprint_and_reuse();
     lifetime(); bounded_collisions(); full_capacity(); prepare_gates_and_popup();
-    scaler_integration(); npc_world_labels(); actor_speech_top_center(); chat_room_titles(); hover_names(); scope_wrapper(); presentation_activity();
+    scaler_integration(); unowned_world_draws(); npc_world_labels(); actor_speech_top_center(); chat_room_titles(); hover_names(); scope_wrapper(); presentation_activity();
     puts("PASS bitmap ownership: frozen tile transforms, offscreen edges, overlap, identity, 24 immutable fields, colors, reuse, expiry, wrap, bounded collisions, capacity, preparation, disabled scaling, native-size provenance, offscreen bypass, legacy isolation, NPC enlargement at moving attachment and tiled labels, actor-speech top-center attachment, chat-room body/tail attachment and input ownership, normal/vertical hover-name centers and passive input, scope restoration, presentation activity");
     return 0;
 }

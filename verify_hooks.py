@@ -281,6 +281,40 @@ ACTOR_TEXT_LAYOUT = (
 )
 
 
+# Additional direct UIWindow roots found during the world-effect audit.
+# These spans are evidence only; rendering keeps the existing manager hooks.
+ADDITIONAL_ROOT_LAYOUT = (
+    ('Merchant title constructor vtable', 0x000DC4DA,
+     bytes.fromhex("c7 06 a4 2b d3 00")),
+    ('Sell sign constructor', 0x00319920,
+     bytes.fromhex("e8 7b 2b dc ff")),
+    ('Sell sign actor +268', 0x00319939,
+     bytes.fromhex("89 83 68 02 00 00")),
+    ('Sell sign manager registration', 0x0031994F,
+     bytes.fromhex("e8 7c b4 ed ff")),
+    ('Sell sign top-center position', 0x00319996,
+     bytes.fromhex("8b b3 68 02 00 00 6a 6e 8b 3e e8 ab 0e e5 ff 8b 93 b0 00 00 00 83 c4 04 2b d0 8b ce 8b 83 ac 00 00 00 83 e8 46 52 50 8b 47 10 ff d0")),
+    ('Buy sign constructor', 0x003210F1,
+     bytes.fromhex("e8 aa b3 db ff")),
+    ('Buy sign actor +270', 0x0032110A,
+     bytes.fromhex("89 83 70 02 00 00")),
+    ('Buy sign manager registration', 0x00321120,
+     bytes.fromhex("e8 ab 3c ed ff")),
+    ('Buy sign top-center position', 0x00321167,
+     bytes.fromhex("8b b3 70 02 00 00 6a 6e 8b 3e e8 da 96 e4 ff 8b 93 b0 00 00 00 83 c4 04 2b d0 8b ce 8b 83 ac 00 00 00 83 e8 46 52 50 8b 47 10 ff d0")),
+    ('Quest tracker constructor vtable', 0x006F0137,
+     bytes.fromhex("c7 06 0c 01 d8 00")),
+    ('Quest tracker manager factory', 0x001FFAC0,
+     bytes.fromhex("e8 3b 06 4f 00")),
+    ('Quest tracker manager +3EC', 0x001FFADC,
+     bytes.fromhex("89 87 ec 03 00 00")),
+    ('Quest tracker screen-right position', 0x001FFAED,
+     bytes.fromhex("8b 87 40 04 00 00 2d 40 01 00 00 68 96 00 00 00 8b 11 50 8b 42 10 ff d0")),
+    ('Quest tracker manager registration', 0x001FFB1A,
+     bytes.fromhex("e8 61 52 ff ff")),
+)
+
+
 class PEImage:
     def __init__(self, path):
         self.data = path.read_bytes()
@@ -504,6 +538,14 @@ def main():
         except ValueError as error:
             failures.append(str(error))
     print("Actor UITrans +0x260 construction, cached size, and projected top-center placement checked")
+    for label, rva, expected in ADDITIONAL_ROOT_LAYOUT:
+        try:
+            actual = pe.read_code(rva, len(expected))
+            if actual != expected:
+                raise ValueError(f"{label}: native bytes differ at RVA 0x{rva:08X}")
+        except ValueError as error:
+            failures.append(str(error))
+    print("Merchant buy/sell actor attachment and quest tracker manager ownership checked")
     viewport_ok = True
     for rva, expected in VIEWPORT_STORES:
         try:
