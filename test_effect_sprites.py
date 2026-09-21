@@ -17,13 +17,14 @@ static PFN_CombatDraw g_owner_combat_draw;
 static DWORD g_owner_buff_icons,g_owner_drag_icons,g_owner_combat_sprites;
 static POINT raw_point;
 static int raw_available=1;
+static int g_owner_input_remap_enabled=1;
 static int input_read_raw_point(POINT* out,RECT* rect) {
     if(!raw_available) return 0; *out=raw_point; return 1;
 }
 '''
 constants = '\n'.join(bm.constant(n) for n in ('PRM_NUM_EFFECT_VTABLE_RVA','PRM_MSG_EFFECT_VTABLE_RVA'))
 production = '\n'.join(bm.function(n) for n in (
-    'owner_effect_ui_active','owner_buff_anchor','owner_buff_draw_scoped',
+    'owner_effect_ui_active','owner_buff_anchor','owner_buff_hover_point','owner_buff_draw_scoped',
     'owner_drag_sprite_scoped','owner_is_combat_text','owner_combat_draw_scoped'))
 tests = bg.tests.replace('int main(void)', 'int background_baseline(void)') + r'''
 static union { DWORD align; BYTE bytes[1024]; } effect;
@@ -95,6 +96,24 @@ static void buff_triangles(void) {
         ((DWORD*)triangle[i])[j]^=1;
     }
 }
+static void buff_preferences(void) {
+    BYTE scratch[96]; const float* out; LONG x=0,y=0;
+    reset_all();memset(&effect,0,sizeof(effect));
+    effect.bytes[0x3e0]=0x62;*(DWORD*)(effect.bytes+0x1bc)=0x201;*(DWORD*)(effect.bytes+0x1d4)=4;
+    g_ui_screen_w=3440;g_ui_screen_h=1440;g_ui_scale_percent=100;
+    g_owner_buff_draw=buff_draw;g_GetCurrentThreadId=thread_id;
+    g_input_enabled=g_input_runtime_enabled=1;
+    CHECK(ui_window_set("BuffIcons",300,25,-10));
+    owner_buff_draw_scoped(effect.bytes);
+    out=make_scaled_ui_vertices(4,0x1c4,triangle,3,scratch,sizeof(scratch),0,0);
+    CHECK((const void*)out==scratch);
+    CHECK(out[0]==3440+(triangle[0][0]-3440)*3+25);
+    CHECK(out[1]==triangle[0][1]*3-10);
+    raw_point.x=3440+(3392-3440)*3+25;raw_point.y=169*3-10;
+    owner_buff_hover_point(&x,&y);CHECK(x==3392 && y==169);
+    CHECK(ui_window_set("BuffIcons",0,0,0));
+    puts("PASS buff preferences: independent 300% visuals, position offsets and matching native hover coordinates with 100% global default");
+}
 static void dragged_sprite(void) {
     int percent,enabled; OwnerBitmapScope saved;
     reset_all(); g_owner_drag_sprite=drag_draw;
@@ -125,7 +144,7 @@ static void combat_sprites(void) {
     }
 }
 int main(void) {
-    CHECK(sizeof(void*)==4); background_baseline(); buff_triangles(); dragged_sprite(); combat_sprites();
+    CHECK(sizeof(void*)==4); background_baseline(); buff_triangles(); buff_preferences(); dragged_sprite(); combat_sprites();
     CHECK(buff_calls && drag_calls && combat_calls);
     puts("PASS effect sprites: three-vertex delayed ownership/fingerprints, world exclusion, nested scopes, drag mouse/scale/ABI, numeric effect allowlist and animation-state restoration");
     return 0;

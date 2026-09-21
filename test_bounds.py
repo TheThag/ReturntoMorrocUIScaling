@@ -171,7 +171,7 @@ static int get_group_transform_for_rect(const UIRectF* r,float* ax,float* ay) {
 
 
 PRODUCTION = "\n".join(extract_function(name) for name in (
-    "fvf_stride", "ui_scale_factor", "f_abs", "rect_contains_point", "rect_area",
+    "fvf_stride", "ui_scale_factor", "ui_type_scale", "f_abs", "rect_contains_point", "rect_area",
     "rect_is_global", "choose_group_anchor", "owner_class_is_hover_popup",
     "owner_class_is_world_label", "owner_class_is_world_title", "owner_class_is_world_name",
     "owner_class_should_hook", "owner_input_touch_state", "owner_fit_rect", "owner_popup_offset",
@@ -777,10 +777,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix="prm-bounds-test-") as directory:
         c_file = Path(directory) / "bounds.c"
         binary = Path(directory) / "bounds-test"
-        c_file.write_text(code)
+        c_file.write_text(Path(__file__).with_name("ui_window_config.h").read_text() + "\n" + code)
         compiler = shlex.split(os.environ.get("CC", "clang"))
         flags = ["-m32", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
-                 "-Wno-unused-variable", "-Wno-unused-parameter", "-fsanitize=address,undefined",
+                 "-Wno-unused-function", "-Wno-unused-variable", "-Wno-unused-parameter", "-fsanitize=address,undefined",
                  "-fno-omit-frame-pointer", str(c_file), "-o", str(binary)]
         subprocess.run(compiler + flags, check=True)
         env = os.environ.copy()

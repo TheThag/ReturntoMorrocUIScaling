@@ -11,6 +11,8 @@ import tempfile
 root = Path(__file__).resolve().parent
 production = (root / 'vtrace_thunks.S').read_text().split('/* Phase 2V:', 1)[1]
 production = production[production.index('.globl _owner_bitmap_primary_thunk'):]
+production = production.split('/* Cooldown producers:', 1)[0]
+production = production.split('/* Native queue draw callsites', 1)[0]
 production = production.replace('_owner_bitmap_draw_c@32', 'bitmap_draw_stub')
 production = production.replace('_owner_background_draw_c@24', 'background_draw_stub')
 production = production.replace('_owner_tooltip_refresh_c@12', 'tooltip_refresh_stub')

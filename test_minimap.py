@@ -347,7 +347,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="prm-minimap-test-") as directory:
         c_file = Path(directory) / "minimap_test.c"
         binary = Path(directory) / "minimap_test"
-        c_file.write_text(prefix + types + stubs + production + tests)
+        c_file.write_text(Path(__file__).with_name("ui_window_config.h").read_text() + "\n" + prefix + types + stubs + production + tests)
         subprocess.run([
             os.environ.get("CC", "clang"), "-m32", "-std=c11", "-O1", "-g",
             "-Wall", "-Wextra", "-Wno-unused-variable", "-Wno-unused-parameter",

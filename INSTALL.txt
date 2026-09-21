@@ -1,10 +1,10 @@
-UI FIX 1.0.1 - Return to Morroc UI Scaling
-Updated package: 2026-09-19
+UI FIX 1.1.0 - Return to Morroc UI Scaling
+Updated package: 2026-09-20
 
 INSTALL OR UPDATE
 
-1. Download ReturntoMorrocUIScaling-1.0.1.zip from the release's Assets section:
-   https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.0.1
+1. Download ReturntoMorrocUIScaling-1.1.0.zip from the release's Assets section:
+   https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.1.0
    The automatically generated Source code downloads do not include the DLL.
 2. Close the game. Preserve any existing winmm.dll and prm-ui-fix.ini outside
    the game folder before replacing files.
@@ -34,9 +34,22 @@ to use those manual dimensions explicitly. The shipped fallback is 3440x1440;
 change it to your game resolution if automatic detection cannot be used.
 
 New installations use ScalePercent=150, SharpFilter=0 (crisp UI off, native
-smoothing), and KeepOnScreen=1. Scale can be adjusted from 100% to 200%.
+smoothing), and KeepOnScreen=1. Scale can be adjusted from 100% to 1000%.
 All shortcuts are configurable in [Keybinds]. Only Overlay=Shift+P is assigned
 by default; blank values disable the other actions. Restart after INI edits.
+
+PER-WINDOW SCALING AND POSITION
+
+Open the desired windows, then press Shift+P. Select Window with left/right;
+use up/down to select Scale, Position X or Position Y, and left/right to edit.
+Enter applies the selected type. S saves all applied settings and closes.
+Apply before switching types. One step below 100% selects the global default.
+Positions are adjustable even for UI without a native drag handle. Values apply
+per window type, not per instance. Keep on screen can reduce oversized windows'
+effective scale; disable it if you want the full requested size.
+
+For automatic diagnostic captures, set Logging=1 under [Trace], restart and
+reproduce the problem. Send prm-ui-fix.log, then restore Logging=0 afterward.
 
 WINDOWS: POSSIBLE DGVOODOO2 / DIRECT3D 11 WORKAROUND
 

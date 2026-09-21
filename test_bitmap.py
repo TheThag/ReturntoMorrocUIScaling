@@ -46,12 +46,12 @@ def constant(name):
 
 start = source.index("static int g_owner_bitmap_enabled=")
 end = source.index("#define MAX_OWNER_CAPTURE_LINKS", start)
-types = struct_type("OwnerWindowState") + "\n" + source[start:end]
+types = (ROOT / "ui_window_config.h").read_text() + "\n" + struct_type("OwnerWindowState") + "\n" + source[start:end]
 types += "\n" + "\n".join(constant(name) for name in (
     "OWNER_BITMAP_PROBES", "PRM_MAP_VTABLE_RVA", "PRM_OFFSCREEN_DP_RETURN_RVA", "PRM_OFFSCREEN_DIP_RETURN_RVA",
 ))
 production = "\n".join(function(name) for name in (
-    "f_abs", "fvf_stride", "ui_scale_factor", "rect_is_global", "choose_group_anchor",
+    "f_abs", "fvf_stride", "ui_scale_factor", "ui_type_scale", "rect_is_global", "choose_group_anchor",
     "rect_contains_point", "rect_area", "transform_bounds", "remap_ui_point",
     "owner_class_is_hover_popup", "owner_class_is_world_label", "owner_class_is_world_title", "owner_class_is_world_name", "owner_class_should_hook",
     "owner_input_touch_state", "owner_fit_rect", "owner_bitmap_prepare",
@@ -63,6 +63,7 @@ production = "\n".join(function(name) for name in (
 ))
 
 prefix = r"""
+static void diagnostic_observe_renderer(void* self) {(void)self;}
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -643,7 +644,81 @@ static void presentation_activity(void) {
     CHECK(hook_SurfaceBltFast((void*)(uintptr_t)1,0,0,(void*)(uintptr_t)2,0,7)==123);
     CHECK(present_notifications==1);
 }
+static void test_hotbar_recreation(void) {
+    OwnerWindowState *first,*next; float ax,ay,dx,dy;
+    reset(); g_ui_screen_w=1920;g_ui_screen_h=1080;g_ui_scale_percent=150;
+    first=owner_state_for(1,1);strcpy(first->class_name,"UIShortCutWnd");
+    CHECK(owner_bitmap_prepare(1,230,0,290,132));
+    CHECK(first->ax==0 && first->ay==0);
+    CHECK(owner_bitmap_prepare(1,933,224,290,132));
+    ax=first->ax;ay=first->ay;dx=first->offset_x;dy=first->offset_y;
+    next=owner_state_for(2,1);strcpy(next->class_name,"UIShortCutWnd");
+    CHECK(owner_bitmap_prepare(2,933,224,290,132));
+    CHECK(next->ax==ax && next->ay==ay && next->offset_x==dx && next->offset_y==dy);
+    CHECK(next->ax+(933-next->ax)*1.5f+next->offset_x==1399.5f);
+    CHECK(next->object_ptr==2 && next->pos_x==933 && next->pos_y==224);
+    /* Screen fitting must survive too, while native position changes remain authoritative. */
+    CHECK(owner_bitmap_prepare(2,933,996,290,132));
+    dx=next->offset_x;dy=next->offset_y;
+    next=owner_state_for(3,1);strcpy(next->class_name,"UIShortCutWnd");
+    CHECK(owner_bitmap_prepare(3,933,996,290,132));
+    CHECK(next->ax==ax && next->ay==ay && next->offset_x==dx && next->offset_y==dy);
+    CHECK(owner_bitmap_prepare(3,800,800,290,132));CHECK(next->pos_x==800 && next->pos_y==800);
+    /* Unrelated windows still choose their own anchor. */
+    CHECK(owner_bitmap_prepare(4,933,224,290,132));CHECK(states[4].ax==960);
+    /* Reproduce the 125% report: transient height and stale recycled offsets
+       must converge to the same displayed Y for the same native rectangle. */
+    g_ui_scale_percent=125; g_ui_keep_on_screen=1;
+    next->ax=960;next->ay=540;
+    CHECK(owner_bitmap_prepare(3,787,837,290,132));
+    CHECK(next->offset_y==0);
+    CHECK(owner_bitmap_prepare(3,787,837,290,264));CHECK(next->offset_y<0);
+    CHECK(owner_bitmap_prepare(3,787,837,290,132));CHECK(next->offset_y==0);
+    next->offset_y=-161; g_ui_present_serial+=3;
+    CHECK(owner_bitmap_prepare(3,787,837,290,132));CHECK(next->offset_y==0);
+    CHECK(next->ay+(837-next->ay)*1.25f+next->offset_y==911.25f);
+    next=owner_state_for(6,1);strcpy(next->class_name,"UIShortCutWnd");
+    CHECK(owner_bitmap_prepare(6,787,837,290,132));
+    CHECK(next->ay==540 && next->offset_y==0);
+    for(int k=0;k<20;++k) {
+        CHECK(owner_bitmap_prepare(6,787,837,290,264));CHECK(next->offset_y<0);
+        CHECK(owner_bitmap_prepare(6,787,837,290,132));CHECK(next->offset_y==0);
+    }
+    /* Preserve edge corrections during continuous same-size movement. */
+    CHECK(owner_bitmap_prepare(6,787,996,290,132));dy=next->offset_y;CHECK(dy<0);
+    g_ui_present_serial++;
+    CHECK(owner_bitmap_prepare(6,787,980,290,132));CHECK(next->offset_y==dy);
+    /* Logged one-time jump: a settled drag correction +266 is part of the
+       desired pose at 790,735; recreation must not reset it to zero. */
+    next->ay=1080; next->offset_y=266.25f;
+    CHECK(owner_bitmap_prepare(6,790,735,290,132));
+    g_ui_present_serial++;
+    CHECK(owner_bitmap_prepare(6,790,735,290,132));
+    CHECK(next->offset_y==266.25f);
+    next=owner_state_for(7,1);strcpy(next->class_name,"UIShortCutWnd");
+    g_ui_present_serial++;
+    CHECK(owner_bitmap_prepare(7,790,735,290,132));
+    CHECK(next->ay==1080 && next->offset_y==266.25f);
+    CHECK(next->ay+(735-next->ay)*1.25f+next->offset_y==915.0f);
+    /* An expanded one-frame bitmap must not replace the settled normal pose. */
+    g_ui_present_serial++;
+    CHECK(owner_bitmap_prepare(7,790,735,290,264));
+    g_ui_present_serial++;
+    CHECK(owner_bitmap_prepare(7,790,735,290,132));CHECK(next->offset_y==266.25f);
+    next->offset_y=-161;g_ui_present_serial+=3;
+    CHECK(owner_bitmap_prepare(7,790,735,290,132));CHECK(next->offset_y==266.25f);
+    /* Different native geometry cannot inherit the previous correction. */
+    g_ui_present_serial+=3;
+    CHECK(owner_bitmap_prepare(7,1000,600,290,132));CHECK(next->offset_y==0);
+    /* A different resolution must not inherit the previous screen transform. */
+    g_ui_screen_w=2560;
+    next=owner_state_for(5,1);strcpy(next->class_name,"UIShortCutWnd");
+    CHECK(owner_bitmap_prepare(5,1200,224,290,132));CHECK(next->ax==1280);
+    puts("PASS hotbar recreation: stable anchor, temporary-size and stale-offset recovery, continuous edge dragging, unrelated-window isolation and resolution invalidation");
+}
+
 int main(void) {
+    test_hotbar_recreation();
     split_tiles(); offscreen_tiles(); overlap_and_identity(); fingerprint_and_reuse();
     lifetime(); bounded_collisions(); full_capacity(); prepare_gates_and_popup();
     scaler_integration(); unowned_world_draws(); npc_world_labels(); actor_speech_top_center(); chat_room_titles(); hover_names(); scope_wrapper(); presentation_activity();

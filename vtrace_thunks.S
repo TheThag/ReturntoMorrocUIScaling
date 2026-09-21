@@ -340,3 +340,45 @@ _owner_window_update_thunk:
   call _owner_window_update_c@4
   movl (%esi), %esi
   jmp *_g_owner_window_update_continue
+
+/* Cooldown producers: insert concrete window and renderer before 8 native arguments. */
+.globl _owner_cooldown_item_thunk
+_owner_cooldown_item_thunk:
+  popl %edx
+  pushl -0x768(%ebp)
+  pushl %ecx
+  pushl %edx
+  jmp _owner_cooldown_build_c@40
+.globl _owner_cooldown_skill_thunk
+_owner_cooldown_skill_thunk:
+  popl %edx
+  pushl -0x774(%ebp)
+  pushl %ecx
+  pushl %edx
+  jmp _owner_cooldown_build_c@40
+.globl _owner_cooldown_buff_thunk
+_owner_cooldown_buff_thunk:
+  popl %edx
+  pushl $0
+  pushl %ecx
+  pushl %edx
+  jmp _owner_cooldown_build_c@40
+
+/* Native queue draw callsites already pushed FVF and the remaining arguments.
+ * Insert primitive type and device beneath the return address; stdcall then
+ * consumes the exact original argument list and returns through two NOPs. */
+.text
+.globl _native_dp_thunk
+_native_dp_thunk:
+  popl %edx
+  pushl 0x24(%ebx)
+  pushl %ecx
+  pushl %edx
+  jmp _native_DrawPrimitive@24
+.globl _native_dip_thunk
+_native_dip_thunk:
+  popl %edx
+  pushl 0x24(%ebx)
+  pushl %ecx
+  pushl %edx
+  jmp _native_DrawIndexedPrimitive@32

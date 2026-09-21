@@ -17,11 +17,11 @@
 #endif
 
 #define UISET_PACKET_VALID    0x80000000UL
-#define UISET_PACKET_ENABLED  0x00000100UL
-#define UISET_PACKET_CRISP    0x00000200UL
-#define UISET_PACKET_KEEP     0x00000400UL
-#define UISET_PACKET_SAVE     0x00000800UL
-#define UISET_PACKET_PERCENT  0x000000ffUL
+#define UISET_PACKET_ENABLED  0x00000400UL
+#define UISET_PACKET_CRISP    0x00000800UL
+#define UISET_PACKET_KEEP     0x00001000UL
+#define UISET_PACKET_SAVE     0x00002000UL
+#define UISET_PACKET_PERCENT  0x000003ffUL
 
 #define UISET_EVENT_TOGGLE    0x00000001UL
 #define UISET_EVENT_UP        0x00000002UL
@@ -73,7 +73,13 @@
 #define UISET_GWL_WNDPROC     (-4)
 #define UISET_CLIENT_MARGIN   24
 #define UISET_PANEL_WIDTH     600
+#ifdef UI_SETTINGS_TYPES
+#define UISET_PANEL_HEIGHT    420
+#define UISET_LAST_ROW 6
+#else
 #define UISET_PANEL_HEIGHT    300
+#define UISET_LAST_ROW 3
+#endif
 #define UISET_PANEL_MIN_EDGE  16
 #define UISET_FONT_MIN        16
 #define UISET_FONT_MAX        28
@@ -143,6 +149,14 @@ static UISettingsWndProc g_ui_settings_original_wndproc;
 static HWND g_ui_settings_bound_hwnd;
 static int g_ui_settings_selected;
 static int g_ui_settings_draft_percent;
+#ifdef UI_SETTINGS_TYPES
+static int g_ui_settings_target,g_ui_settings_draft_x,g_ui_settings_draft_y;
+static void ui_settings_load_target(void) {
+    g_ui_settings_draft_percent=UI_SETTINGS_TYPE_VALUE(g_ui_settings_target,0);
+    g_ui_settings_draft_x=UI_SETTINGS_TYPE_VALUE(g_ui_settings_target,1);
+    g_ui_settings_draft_y=UI_SETTINGS_TYPE_VALUE(g_ui_settings_target,2);
+}
+#endif
 static int g_ui_settings_draft_enabled;
 static int g_ui_settings_draft_crisp;
 static int g_ui_settings_draft_keep;
@@ -178,7 +192,7 @@ static PFN_UISettingsCreateFontA g_ui_settings_create_font;
 
 static int ui_settings_clamp_percent(int percent) {
     if (percent < 100) return 100;
-    if (percent > 200) return 200;
+    if (percent > 1000) return 1000;
     return percent;
 }
 
@@ -228,7 +242,7 @@ static int ui_settings_parse_percent(const char* text, int* out) {
         ++i;
     }
     while (text[i] == ' ' || text[i] == '\t') ++i;
-    if (!digits || text[i] || value < 100 || value > 200) return 0;
+    if (!digits || text[i] || value < 100 || value > 1000) return 0;
     *out = value;
     return 1;
 }
@@ -599,6 +613,10 @@ static void ui_settings_open_panel(void) {
     g_ui_settings_draft_crisp = g_ui_sharp_filter != 0;
     g_ui_settings_draft_keep = g_ui_keep_on_screen != 0;
     g_ui_settings_selected = 0;
+#ifdef UI_SETTINGS_TYPES
+    if(g_ui_settings_target>=UI_SETTINGS_TYPE_COUNT()) g_ui_settings_target=0;
+    ui_settings_load_target();
+#endif
     g_ui_settings_status = 0;
     g_ui_settings_failure_logged = 0;
     __atomic_store_n(&g_ui_settings_deferred_open, 0, __ATOMIC_RELEASE);
@@ -612,6 +630,25 @@ static void ui_settings_close_panel(void) {
 }
 
 static void ui_settings_change_selected(int delta) {
+#ifdef UI_SETTINGS_TYPES
+    int row=g_ui_settings_selected;
+    if(row==0) {
+        int count=UI_SETTINGS_TYPE_COUNT();
+        g_ui_settings_target=(g_ui_settings_target+delta+count)%count;
+        ui_settings_load_target();
+    } else if(row==1) {
+        int value=g_ui_settings_draft_percent;
+        if(g_ui_settings_target && value==0) value=delta>0?100:1000;
+        else if(g_ui_settings_target && value==100 && delta<0) value=0;
+        else value=ui_settings_clamp_percent(value+delta*5);
+        g_ui_settings_draft_percent=value;
+    } else if(row==2 || row==3) {
+        int* v=row==2?&g_ui_settings_draft_x:&g_ui_settings_draft_y;
+        if(g_ui_settings_target) { *v+=delta*5;if(*v>8192)*v=8192;if(*v< -8192)*v=-8192; }
+    } else if(row==4) g_ui_settings_draft_enabled=!g_ui_settings_draft_enabled;
+    else if(row==5) g_ui_settings_draft_crisp=!g_ui_settings_draft_crisp;
+    else g_ui_settings_draft_keep=!g_ui_settings_draft_keep;
+#else
     if (g_ui_settings_selected == 0) {
         g_ui_settings_draft_percent = ui_settings_clamp_percent(
             g_ui_settings_draft_percent + delta * 5);
@@ -622,17 +659,25 @@ static void ui_settings_change_selected(int delta) {
     } else {
         g_ui_settings_draft_keep = !g_ui_settings_draft_keep;
     }
+#endif
 }
 
 static void ui_settings_select_row(int delta) {
     int row = g_ui_settings_selected + delta;
-    if (row < 0) row = 3;
-    if (row > 3) row = 0;
+    if (row < 0) row = UISET_LAST_ROW;
+    if (row > UISET_LAST_ROW) row = 0;
     g_ui_settings_selected = row;
 }
 
 static void ui_settings_queue_draft(int save) {
-    ui_settings_queue_values(g_ui_settings_draft_percent,
+    int percent=g_ui_settings_draft_percent;
+#ifdef UI_SETTINGS_TYPES
+    if(!UI_SETTINGS_TYPE_APPLY(g_ui_settings_target,percent,g_ui_settings_draft_x,g_ui_settings_draft_y,save)) {
+        g_ui_settings_status=3; return;
+    }
+    if(g_ui_settings_target) percent=g_ui_scale_percent;
+#endif
+    ui_settings_queue_values(percent,
                              g_ui_settings_draft_enabled,
                              g_ui_settings_draft_crisp,
                              g_ui_settings_draft_keep, save);
@@ -668,7 +713,7 @@ static void ui_settings_drain_events(void) {
     if (events & UISET_EVENT_ENTER) ui_settings_queue_draft(0);
     if (events & UISET_EVENT_SAVE) {
         ui_settings_queue_draft(1);
-        ui_settings_close_panel();
+        if(g_ui_settings_status!=3) ui_settings_close_panel();
     }
 }
 
@@ -784,6 +829,27 @@ static void ui_settings_draw_surface(void* target) {
     text.left=panel.left+16; text.right=panel.right-16;
     text.top=panel.top+8; text.bottom=panel.top+38;
     if (!g_ui_settings_text_out(dc,text.left,text.top,"PRM UI FIX",10)) goto cleanup;
+#ifdef UI_SETTINGS_TYPES
+    { int i; char label[120];
+    row.left=panel.left+16; row.right=panel.right-16; row.top=panel.top+48; row.bottom=row.top+34;
+    for(i=0;i<=UISET_LAST_ROW;++i) {
+        label[0]=0;
+        if(i==0) {s_append(label,sizeof(label),"Window: ");s_append(label,sizeof(label),UI_SETTINGS_TYPE_NAME(g_ui_settings_target));}
+        else if(i==1) {
+            if(!g_ui_settings_draft_percent) s_append(label,sizeof(label),"Scale: inherit global default");
+            else ui_settings_format_scale(label,sizeof(label),g_ui_settings_draft_percent);
+        } else if(i==2 || i==3) {
+            s_append(label,sizeof(label),i==2?"Position X: ":"Position Y: ");
+            if(!g_ui_settings_target) s_append(label,sizeof(label),"select a window");
+            else s_append_int(label,sizeof(label),i==2?g_ui_settings_draft_x:g_ui_settings_draft_y);
+        } else if(i==4) s_append(label,sizeof(label),g_ui_settings_draft_enabled?"Enable UI scaling":"Enable UI scaling [off]");
+        else if(i==5) s_append(label,sizeof(label),g_ui_settings_draft_crisp?"Crisp filtering":"Crisp filtering [off]");
+        else s_append(label,sizeof(label),g_ui_settings_draft_keep?"Keep on screen":"Keep on screen [off]");
+        if(g_ui_settings_selected==i && !ui_settings_fill(dc,&row,0x00605030UL)) goto cleanup;
+        text=row;text.left+=10;if(!ui_settings_draw_line(dc,&text,label)) goto cleanup;
+        row.top+=38;row.bottom+=38;
+    }}
+#else
     ui_settings_format_scale(scale_line,sizeof(scale_line),g_ui_settings_draft_percent);
     row.left=panel.left+16; row.right=panel.right-16; row.top=panel.top+58; row.bottom=row.top+34;
     selected=g_ui_settings_selected==0; if (selected && !ui_settings_fill(dc,&row,0x00605030UL)) goto cleanup;
@@ -797,6 +863,7 @@ static void ui_settings_draw_surface(void* target) {
     row.top+=38; row.bottom+=38;
     selected=g_ui_settings_selected==3; if (selected && !ui_settings_fill(dc,&row,0x00605030UL)) goto cleanup;
     text=row; text.left+=10; if (!ui_settings_draw_line(dc,&text,g_ui_settings_draft_keep?"Keep on screen":"Keep on screen [off]")) goto cleanup;
+#endif
     text.left=panel.left+16; text.right=panel.right-16;
     text.top=panel.bottom-72; text.bottom=panel.bottom-40;
     if (!ui_settings_draw_line(dc,&text,"Arrows: select / change    Enter: Apply")) goto cleanup;

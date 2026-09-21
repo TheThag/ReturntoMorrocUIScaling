@@ -85,11 +85,14 @@ static int g_ui_keep_on_screen;
 static int g_ui_scale_global=0,g_ui_anchor_mode=2,g_ui_global_threshold_percent=65;
 static LONG g_ui_screen_w=3440,g_ui_screen_h=1440,g_ui_origin_x=0,g_ui_origin_y=0;
 static DWORD fake_capture;
+static int g_ui_enabled=1;
 static float scale=1.25f;
 static int locked;
 static void owner_input_region_lock(void) { assert(!locked); locked=1; }
 static void owner_input_region_unlock(void) { assert(locked); locked=0; }
+#define g_ui_scale_percent ((int)(scale*100.0f+0.5f))
 static float ui_scale_factor(void) { return scale; }
+static float ui_type_scale(const char* name) { return ui_window_percent(name,g_ui_scale_percent)*0.01f; }
 static DWORD owner_native_capture(void) { return fake_capture; }
 static DWORD current_thread(void) { return 17; }
 static DWORD (*g_GetCurrentThreadId)(void)=current_thread;
@@ -413,9 +416,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="prm-drag-test-") as directory:
         harness = Path(directory) / "drag.c"
         binary = Path(directory) / "drag-test"
-        harness.write_text(PREFIX + types + STUBS + functions + TESTS)
+        harness.write_text(Path(__file__).with_name("ui_window_config.h").read_text()+"\n"+PREFIX + types + STUBS + functions + TESTS)
         compiler = shlex.split(os.environ.get("CC", "clang"))
-        subprocess.run(compiler + ["-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
+        subprocess.run(compiler + ["-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
                                    "-fsanitize=undefined", "-fno-sanitize-recover=all", str(harness), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS: extracted capture/drag functions with native stubs; no Windows integration claim")

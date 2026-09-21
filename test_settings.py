@@ -397,11 +397,21 @@ static void test_parser_and_packet(void) {
     int value=0;
     assert(ui_settings_parse_percent("100",&value) && value==100);
     assert(ui_settings_parse_percent(" 200 ",&value) && value==200);
+    assert(ui_settings_parse_percent("300",&value) && value==300);
+    assert(ui_settings_parse_percent("1000",&value) && value==1000);
+    for(int pct=100;pct<=1000;++pct) for(int flags=0;flags<16;++flags) {
+        DWORD packed=ui_settings_pack(pct,flags&1,flags&2,flags&4,flags&8);
+        assert((packed&UISET_PACKET_PERCENT)==(DWORD)pct);
+        assert(!!(packed&UISET_PACKET_ENABLED)==!!(flags&1));
+        assert(!!(packed&UISET_PACKET_CRISP)==!!(flags&2));
+        assert(!!(packed&UISET_PACKET_KEEP)==!!(flags&4));
+        assert(!!(packed&UISET_PACKET_SAVE)==!!(flags&8));
+    }
     assert(!ui_settings_parse_percent("99",&value));
-    assert(!ui_settings_parse_percent("201",&value));
+    assert(!ui_settings_parse_percent("1001",&value));
     assert(!ui_settings_parse_percent("133x",&value));
     assert((ui_settings_pack(50,1,0,1,1)&UISET_PACKET_PERCENT)==100);
-    assert((ui_settings_pack(250,0,1,0,0)&UISET_PACKET_PERCENT)==200);
+    assert((ui_settings_pack(1050,0,1,0,0)&UISET_PACKET_PERCENT)==1000);
     puts("PASS: settings percent validation, clamp, and packed fields");
 }
 

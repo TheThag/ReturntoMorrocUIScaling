@@ -75,7 +75,7 @@ production = "\n".join(
     for name in (
         "f_abs",
         "fvf_stride",
-        "ui_scale_factor",
+        "ui_scale_factor", "ui_type_scale",
         "rect_is_global",
         "choose_group_anchor",
         "owner_class_is_hover_popup",

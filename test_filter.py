@@ -17,6 +17,7 @@ import tempfile
 sys.dont_write_bytecode = True
 from test_drag import extract_type
 from test_present import definition
+from test_input import extract_function
 
 
 PREFIX = r'''
@@ -113,7 +114,9 @@ static void add_draw_stat(DWORD method,DWORD prim,DWORD fvf,DWORD n,
 
 TESTS = r'''
 static void reset(void) {
+    memset(&record,0,sizeof(record));
     memset(fake_vtable,0,sizeof(fake_vtable));
+    record.vt=fake_vtable;
     fake_device.vt=fake_vtable;
     fake_vtable[36]=(void*)fake_get; fake_vtable[37]=(void*)fake_set;
     record.orig_draw=(void*)fake_draw;
@@ -205,7 +208,31 @@ static void test_scope_lifetime(void) {
     ui_filter_begin(0,1,&inner); ui_filter_end(0,&inner);
     assert(!get_count && !set_count);
 }
+static HRESULT WINAPI replacement_a(void* self,DWORD p,DWORD f,const void* v,DWORD n,DWORD flags) {
+    return hook_DrawPrimitive(self,p,f,v,n,flags);
+}
+static HRESULT WINAPI replacement_indexed(void* self,DWORD p,DWORD f,const void* v,DWORD n,const WORD* idx,DWORD ni,DWORD flags) {
+    return hook_DrawIndexedPrimitive(self,p,f,v,n,idx,ni,flags);
+}
+static void native_test(void) {
+    reset(); fake_vtable[25]=(void*)replacement_a;
+    native_DrawPrimitive(&fake_device,4,0x1c4,vertices,4,7);
+    assert(draw_count==1 && scale_count==1 && fake_vtable[25]==(void*)replacement_a);
+    fake_vtable[25]=(void*)fake_draw;
+    native_DrawPrimitive(&fake_device,4,0x1c4,vertices,4,7);
+    assert(draw_count==2 && scale_count==2);
+    fake_vtable[25]=(void*)hook_DrawPrimitive;
+    native_DrawPrimitive(&fake_device,4,0x1c4,vertices,4,7);
+    assert(draw_count==3 && scale_count==3);
+    reset(); indexed=1; fake_vtable[26]=(void*)replacement_indexed;
+    assert(native_DrawIndexedPrimitive(&fake_device,4,0x1c4,vertices,4,indices,6,7)==draw_result);
+    assert(draw_count==1 && scale_count==1);
+    for(int i=0;i<64;++i) assert(!g_draw_chain_frames[i].depth);
+    puts("PASS: native DP/DIP forwarding, changing live targets, saved-hook callback, single scaling, unchanged vtables");
+}
+
 int main(void) {
+    native_test();
     for(indexed=0;indexed<=1;++indexed) {
         test_draw_scope(); test_unmodified_draws(); test_setup_failures(); test_restore_failures();
         puts(indexed?"PASS: indexed draw filter scope, state restoration, unchanged draws and failure handling":
@@ -230,13 +257,22 @@ def main():
         if not match:
             raise ValueError(f"missing actual source typedef {name}")
         types += match[0] + "\n"
-    types += "\n".join(extract_type(source, name) for name in ("DevHookRec", "UIFilterScope"))
-    production = "\n".join(definition(source, name) for name in (
-        "ui_filter_end", "ui_filter_begin", "hook_DrawPrimitive", "hook_DrawIndexedPrimitive"))
+    types += "\n".join(extract_type(source, name) for name in ("DevHookRec", "UIFilterScope", "DrawChainFrame"))
+    chain_stubs = r"""
+static DrawChainFrame g_draw_chain_frames[64];
+static volatile int32_t g_draw_chain_lock;
+static DWORD thread_id(void) {return 42;}
+static DWORD (*g_GetCurrentThreadId)(void)=thread_id;
+static DWORD g_native_draw_calls[2];
+static HRESULT WINAPI hook_DrawPrimitive(void*,DWORD,DWORD,const void*,DWORD,DWORD);
+static HRESULT WINAPI hook_DrawIndexedPrimitive(void*,DWORD,DWORD,const void*,DWORD,const WORD*,DWORD,DWORD);
+"""
+    production = "\n".join((extract_function(source.replace("HRESULT WINAPI native_", "static HRESULT WINAPI native_"), name) if name.startswith("native_") else definition(source, name)) for name in (
+        "draw_chain_enter", "draw_chain_leave", "ui_filter_end", "ui_filter_begin", "hook_DrawPrimitive", "hook_DrawIndexedPrimitive", "native_DrawPrimitive", "native_DrawIndexedPrimitive"))
     with tempfile.TemporaryDirectory(prefix="prm-filter-test-") as directory:
         harness = Path(directory) / "filter.c"
         binary = Path(directory) / "filter-test"
-        harness.write_text(PREFIX + types + STUBS + production + TESTS)
+        harness.write_text(PREFIX + types + STUBS + chain_stubs + production + TESTS)
         compiler = shlex.split(os.environ.get("CC", "clang"))
         subprocess.run(compiler + ["-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
                                    "-fsanitize=address,undefined", "-fno-sanitize-recover=all",

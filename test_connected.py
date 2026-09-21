@@ -160,6 +160,8 @@ static int mem_readable(const void *p,DWORD bytes) {
 static float ui_scale_factor(void) {
     return ((float)g_ui_scale_percent)*0.01f;
 }
+static int g_ui_enabled=1;
+static float ui_type_scale(const char* n) {return ui_window_percent(n,g_ui_scale_percent)*0.01f;}
 static DWORD current_thread(void) { return 17; }
 
 /* Existing states are copied records. On a normal lookup the live first word
@@ -538,7 +540,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="prm-connected-test-") as directory:
         c_file = Path(directory) / "connected.c"
         binary = Path(directory) / "connected-test"
-        c_file.write_text(code)
+        c_file.write_text(Path(__file__).with_name("ui_window_config.h").read_text() + "\n" + code)
         compiler = shlex.split(os.environ.get("CC", "clang"))
         subprocess.run(
             compiler + [

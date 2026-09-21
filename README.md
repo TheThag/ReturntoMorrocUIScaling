@@ -4,14 +4,16 @@ UI FIX enlarges the game interface while keeping clicks, dragging and tooltips
 aligned with their windows. It includes screen fitting, corrected world input,
 actor-attached labels, minimap support and an in-game settings overlay.
 
-Release **1.0.1** fixes actor health and cast bars, combat text, buff icons,
-and dragged skill/item icons while preserving world-effect placement.
-These fixes were confirmed in-game on Linux/Wine. Windows remains untested.
+Release **1.1.0** adds independent scaling and positioning per window type,
+with global and per-window scales up to **1000%**. It also fixes hotbar and buff
+cooldown placement, preserves hotbar positioning across map changes, and adds
+automatic diagnostic captures. These changes were confirmed in-game on Linux/Wine.
+Windows remains untested.
 
 ## Download and install
 
-Download **ReturntoMorrocUIScaling-1.0.1.zip** from the
-[1.0.1 release](https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.0.1).
+Download **ReturntoMorrocUIScaling-1.1.0.zip** from the
+[1.1.0 release](https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.1.0).
 The repository contains source code; compiled DLLs are distributed as release assets.
 
 1. Download the ZIP under **Assets**, then close the game. Preserve any existing
@@ -24,7 +26,7 @@ The repository contains source code; compiled DLLs are distributed as release as
    `OptionInfoList["HEIGHT"]` values when they form a valid pair. If the file
    or either value is unavailable, it falls back to `ScreenWidth` and
    `ScreenHeight` under `[UI]`. Set `AutoDetectResolution=0` to always use those
-   manual values. Choose `ScalePercent` between **100 and 200**.
+   manual values. Choose `ScalePercent` between **100 and 1000**.
 4. For Wine/Lutris, set `WINEDLLOVERRIDES=winmm=n,b`, preserving other overrides.
 5. Start the game normally. Press the configured overlay shortcut, **Shift+P**
    by default, to adjust the UI. New installations start at **150%**, with crisp
@@ -71,7 +73,7 @@ and preserves the rest of the INI.
 
 | INI setting | Default | Purpose |
 | --- | --- | --- |
-| `UI.ScalePercent` | `150` | UI enlargement, 100%–200% |
+| `UI.ScalePercent` | `150` | UI enlargement, 100%–1000% |
 | `UI.AutoDetectResolution` | `1` | Read `savedata/OptionInfo.lua` at startup; fall back to the manual resolution |
 | `UI.ScreenWidth` / `UI.ScreenHeight` | `3440` / `1440` | Manual render-resolution fallback |
 | `UI.KeepOnScreen` | `1` | Fit enlarged windows within the screen |
@@ -121,6 +123,29 @@ write troubleshooting information to the log. `CaptureTrace` additionally
 requires `[Trace] Enabled=1`; `CaptureVirtualTrace` requires
 `[VirtualTrace] Enabled=1`. These tracing options are disabled by default.
 
+## Automatic troubleshooting log
+
+Set `Logging=1` in the existing `[Trace]` section of `prm-ui-fix.ini`, then
+restart the game. This enables render tracing regardless of `Trace.Enabled`
+and automatically writes an owner diagnostic snapshot, UI groups, and a render
+capture on the first presentation and every 10 seconds thereafter. Captures use
+`CaptureMs` (2000 ms by default). No shortcuts are required. Empty captures also
+finish at presentation, helping identify a missing draw path.
+
+Visit the menu, enter the game, and reproduce the issue. Spend at least 15 seconds
+on each screen, then send `prm-ui-fix.log` beside `PRM.exe`. Set `Logging=0` and
+restart when finished to stop automatic captures and their logging overhead.
+Automatic snapshots also include `DeviceCheck` records for the last created
+device, the device observed in native UI submissions, and live hook-slot
+addresses. Four validated native UI queue draw callsites route through the scaler
+and then forward to the renderer's current draw function. The adapters handle
+callbacks through saved COM hooks without applying scaling twice. They do not
+reinstall device vtable hooks. `NativeDraw DP calls` and `NativeDraw DIP calls`
+are cumulative counters emitted with the periodic snapshots; there are no
+per-draw or per-recovery messages.
+Existing manual diagnostic shortcuts still work. The normal startup log remains
+available when automatic logging is off.
+
 ## Build and verify
 
 Building requires Bash, Clang, LLVM's `lld-link` and the `file` utility on Linux.
@@ -157,3 +182,30 @@ python3 audit_phase3e.py /path/to/prm-ui-fix.log
 Missing samples are reported as REVIEW. Without explicit paths, development
 tools use `~/Games/Refuge/`. See [implementation notes](docs/IMPLEMENTATION.md)
 for the native drawing and input paths.
+
+The shortcut hotbar retains its scaling anchor across
+native window recreation within the same game session (including map changes).
+A screen-fitting correction observed on two consecutive frames is retained
+when the hotbar returns with matching native position, size, scale and anchor.
+Other geometry is fitted again, so a one-frame expanded rectangle cannot replace
+the settled correction. Continuous same-size dragging retains its edge correction
+so it can move smoothly away from screen boundaries. Native coordinates remain
+authoritative. This does not save positions across
+restarts or override a position reset made by the game itself.
+
+Independent window scale and position controls are available in the settings
+panel. Open the game window first so its type appears in the Window selector.
+Use left/right on Window to select a type, then adjust Scale, Position X and
+Position Y. Enter applies the draft. S saves all applied window settings and
+closes the panel. Position values are screen-pixel offsets, so they also move
+widgets without native drag handles; hit regions and cooldowns follow them.
+
+Each type can use 100–1000% or inherit the global default (one step below 100%).
+Set positions back to zero to restore native placement plus screen fitting.
+Keep on screen can reduce the effective scale when a window cannot fit.
+Offsets are applied after fitting and can deliberately move a window offscreen;
+use the settings panel to bring it back. Existing INI values remain the defaults.
+Settings persist under `[Window.<native window type>]` with `ScalePercent`
+(0 means inherit), `OffsetX` and `OffsetY`. Buff icons use `[Window.BuffIcons]`.
+Full-screen windows retain native size by default; an explicit per-type setting
+overrides that default. Keep on screen may still limit their fitted size.
