@@ -1,5 +1,5 @@
 /*
- * PRM UI FIX 1.1.0 - window ownership, scaling and configurable shortcuts
+ * PRM UI FIX 1.1.1 - window ownership, scaling and configurable shortcuts
  * 32-bit WINMM proxy for Return to Morroc PRM.exe
  *
  * Runtime integration:
@@ -1038,7 +1038,7 @@ static void install_device_hooks(void* obj) {
     e=patch_vtable_slot(vt,31,(void*)hook_DrawPrimitiveVB,&r->orig_draw_vb);
     f=patch_vtable_slot(vt,32,(void*)hook_DrawIndexedPrimitiveVB,&r->orig_draw_indexed_vb);
     g=patch_vtable_slot(vt,35,(void*)hook_SetTexture,&r->orig_set_texture);
-    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (1.1.0 owner UI + isolated world input)");
+    if(a&&b&&c&&d&&e&&f&&g&&h&&j) log_line("Direct3DDevice7 hooks: OK (1.1.1 owner UI + isolated world input)");
     else log_line("Direct3DDevice7 hooks: PARTIAL/FAILED");
 }
 
@@ -4142,7 +4142,7 @@ static void maybe_dump_owner_windows(void) {
     static OwnerInputRegion active[64];
     if(!g_owner_submit_enabled) return;
     if(!ui_hotkey_take(UIHK_DIAGNOSTICS)) return;
-    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 1.1.0 present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+    line[0]=0; s_append(line,sizeof(line),"OWNER INPUT 1.1.1 present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
     s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
     s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
     s_append(line,sizeof(line)," ownerMouse="); s_append_uint(line,sizeof(line),g_owner_mapped_mouse);
@@ -4869,7 +4869,7 @@ static void ui_present_boundary(const char* method) {
         log_line(line);
     }
     if(g_owner_submit_enabled && g_ui_present_serial>0 && (g_ui_present_serial%1200UL)==0) {
-        line[0]=0; s_append(line,sizeof(line),"1.1.0 heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
+        line[0]=0; s_append(line,sizeof(line),"1.1.1 heartbeat present="); s_append_uint(line,sizeof(line),g_ui_present_serial);
         s_append(line,sizeof(line)," matched="); s_append_uint(line,sizeof(line),g_owner_submit_total_matched);
         s_append(line,sizeof(line)," tagged="); s_append_uint(line,sizeof(line),g_owner_tagged_draws);
         s_append(line,sizeof(line)," pending="); s_append_uint(line,sizeof(line),g_owner_submit_count);
@@ -5280,6 +5280,8 @@ static HRESULT WINAPI hook_SetTexture(void* self, DWORD stage, void* tex) {
     return fn ? fn(self,stage,tex) : (HRESULT)0x80004005UL;
 }
 
+#include "ui_crisp_sampling.h"
+
 /* Native UI textures use LINEAR min/mag filtering. Override only a draw whose
  * screen vertices we actually scaled; cursor, world, native-size labels and
  * offscreen composition keep their original states. Read the actual device
@@ -5287,6 +5289,7 @@ static HRESULT WINAPI hook_SetTexture(void* self, DWORD stage, void* tex) {
 typedef struct {
     PFN_D3D7_SetTextureStageState set;
     DWORD mag,min,changed;
+    int point_ready;
 } UIFilterScope;
 static void ui_filter_end(void* self, UIFilterScope* scope) {
     if(!scope->set) return;
@@ -5296,7 +5299,7 @@ static void ui_filter_end(void* self, UIFilterScope* scope) {
 }
 static void ui_filter_begin(void* self, int scaled, UIFilterScope* scope) {
     void** vt; PFN_D3D7_GetTextureStageState get;
-    scope->set=0; scope->changed=0;
+    scope->set=0; scope->changed=0; scope->point_ready=0;
     if(!g_ui_sharp_filter || !scaled || !self) return;
     vt=*(void***)self; if(!vt || !vt[36] || !vt[37]) return;
     get=(PFN_D3D7_GetTextureStageState)vt[36];
@@ -5312,6 +5315,7 @@ static void ui_filter_begin(void* self, int scaled, UIFilterScope* scope) {
         scope->changed|=2;
         if(scope->set(self,0,17,1)<0) { ++g_ui_sharp_failures; ui_filter_end(self,scope); return; }
     }
+    scope->point_ready=1;
     ++g_ui_sharp_draws;
 }
 
@@ -5329,6 +5333,7 @@ static HRESULT WINAPI hook_DrawPrimitive(void* self, DWORD prim, DWORD fvf, cons
     maybe_start_capture(); add_draw_stat(0,prim,fvf,nverts,verts,caller,__builtin_frame_address(0)); maybe_finish_capture();
     out_verts=make_scaled_ui_vertices(prim,fvf,verts,nverts,scratch,sizeof(scratch),__builtin_frame_address(0),ptr_to_rva(caller));
     ui_filter_begin(self,out_verts!=verts,&filter);
+    if(filter.point_ready && out_verts!=verts) ui_crisp_bias_quad(fvf,(void*)out_verts,nverts);
     hr=fn(self,prim,fvf,out_verts,nverts,flags);
     ui_filter_end(self,&filter);
     draw_chain_leave(token);
@@ -5357,6 +5362,7 @@ HRESULT WINAPI native_DrawPrimitive(void* self, DWORD prim, DWORD fvf, const voi
     maybe_start_capture(); add_draw_stat(0,prim,fvf,nverts,verts,caller,__builtin_frame_address(0)); maybe_finish_capture();
     out_verts=make_scaled_ui_vertices(prim,fvf,verts,nverts,scratch,sizeof(scratch),__builtin_frame_address(0),ptr_to_rva(caller));
     ui_filter_begin(self,out_verts!=verts,&filter);
+    if(filter.point_ready && out_verts!=verts) ui_crisp_bias_quad(fvf,(void*)out_verts,nverts);
     hr=fn(self,prim,fvf,out_verts,nverts,flags);
     ui_filter_end(self,&filter);
     draw_chain_leave(token);
@@ -5377,6 +5383,7 @@ static HRESULT WINAPI hook_DrawIndexedPrimitive(void* self, DWORD prim, DWORD fv
     maybe_start_capture(); add_draw_stat(1,prim,fvf,nverts,verts,caller,__builtin_frame_address(0)); maybe_finish_capture();
     out_verts=make_scaled_ui_vertices(prim,fvf,verts,nverts,scratch,sizeof(scratch),__builtin_frame_address(0),ptr_to_rva(caller));
     ui_filter_begin(self,out_verts!=verts,&filter);
+    if(filter.point_ready && out_verts!=verts) ui_crisp_bias_quad(fvf,(void*)out_verts,nverts);
     hr=fn(self,prim,fvf,out_verts,nverts,idx,nidx,flags);
     ui_filter_end(self,&filter);
     draw_chain_leave(token);
@@ -5405,6 +5412,7 @@ HRESULT WINAPI native_DrawIndexedPrimitive(void* self, DWORD prim, DWORD fvf, co
     maybe_start_capture(); add_draw_stat(1,prim,fvf,nverts,verts,caller,__builtin_frame_address(0)); maybe_finish_capture();
     out_verts=make_scaled_ui_vertices(prim,fvf,verts,nverts,scratch,sizeof(scratch),__builtin_frame_address(0),ptr_to_rva(caller));
     ui_filter_begin(self,out_verts!=verts,&filter);
+    if(filter.point_ready && out_verts!=verts) ui_crisp_bias_quad(fvf,(void*)out_verts,nverts);
     hr=fn(self,prim,fvf,out_verts,nverts,idx,nidx,flags);
     ui_filter_end(self,&filter);
     draw_chain_leave(token);
@@ -5448,7 +5456,7 @@ static void install_phase2_hooks(void) {
     if(!g_exe) return;
     ok=patch_import(g_exe,"DDRAW.dll","DirectDrawCreateEx",(void*)hook_DirectDrawCreateEx,(void**)&g_real_DirectDrawCreateEx);
     log_line(ok ? "DirectDrawCreateEx IAT hook: OK" : "DirectDrawCreateEx IAT hook: NOT FOUND");
-    if(ok) log_line("1.1.0 renderer armed: all-window owner UI + isolated world input");
+    if(ok) log_line("1.1.1 renderer armed: all-window owner UI + isolated world input");
 }
 
 /* ---------- real WINMM ---------- */
@@ -5557,7 +5565,7 @@ static void initialize_mod(void) {
     DWORD ts = 0, image = 0, text_hash = 0;
     bootstrap_kernel32();
     init_paths();
-    log_line("=== PRM UI FIX Version 1.1.0 (per-window scaling and positioning) ===");
+    log_line("=== PRM UI FIX Version 1.1.1 (crisp sampling fix) ===");
     log_line("Proxy DLL loaded");
     ui_hotkeys_load();
     if (g_GetPrivateProfileIntA) {
@@ -5719,7 +5727,7 @@ static void initialize_mod(void) {
     owner_submit_install_hooks();
     vtrace_install_submit_hooks();
     vtrace_install_active_vtables();
-    log_line("UI FIX 1.1.0 armed: shortcuts configured in INI [Keybinds]");
+    log_line("UI FIX 1.1.1 armed: shortcuts configured in INI [Keybinds]");
     log_line("Initialization complete");
 }
 

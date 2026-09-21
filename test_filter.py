@@ -192,6 +192,30 @@ static void test_restore_failures(void) {
     assert(draw()==42 && set_count==4 && g_ui_sharp_failures==1);
     assert(magnification==2 && minification==1);
 }
+static void test_sampling_integration(void) {
+    for(int mode=0;mode<4;++mode) {
+        float rect[4][8]={0},after[4][8];
+        reset();
+        for(int i=0;i<4;++i) {
+            rect[i][0]=(i&1)*256;rect[i][1]=(i>>1)*256;
+            rect[i][3]=1;rect[i][6]=(i&1)+.5f/256;rect[i][7]=(i>>1)+.5f/256;
+        }
+        memcpy(vertices,rect,sizeof(rect));memcpy(transformed_vertices,rect,sizeof(rect));
+        if(mode==1)g_ui_sharp_filter=0;
+        if(mode==2)transformed=0;
+        if(mode==3)get_failure=16;
+        if(mode)expected_mag=expected_min=2;
+        assert(draw()==42);
+        assert(!memcmp(vertices,rect,sizeof(rect)));
+        memcpy(after,transformed_vertices,sizeof(after));
+        for(int i=0;i<4;++i) {
+            assert(!memcmp(after[i],rect[i],24));
+            assert(after[i][6]==rect[i][6]+(mode?0:1.0f/(64*256)));
+            assert(after[i][7]==rect[i][7]+(mode?0:1.0f/(64*256)));
+        }
+    }
+    memset(vertices,0,sizeof(vertices));memset(transformed_vertices,0,sizeof(transformed_vertices));
+}
 static void test_scope_lifetime(void) {
     UIFilterScope outer,inner;
     reset();
@@ -234,7 +258,7 @@ static void native_test(void) {
 int main(void) {
     native_test();
     for(indexed=0;indexed<=1;++indexed) {
-        test_draw_scope(); test_unmodified_draws(); test_setup_failures(); test_restore_failures();
+        test_sampling_integration(); test_draw_scope(); test_unmodified_draws(); test_setup_failures(); test_restore_failures();
         puts(indexed?"PASS: indexed draw filter scope, state restoration, unchanged draws and failure handling":
                      "PASS: primitive draw filter scope, state restoration, unchanged draws and failure handling");
     }
@@ -250,7 +274,7 @@ def main():
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().with_name("prm_uifix.c"))
     args = parser.parse_args()
     source = args.source.read_text()
-    types = ""
+    types = '#include "ui_crisp_sampling.h"\n'
     for name in ("PFN_D3D7_DrawPrimitive", "PFN_D3D7_DrawIndexedPrimitive",
                  "PFN_D3D7_GetTextureStageState", "PFN_D3D7_SetTextureStageState"):
         match = re.search(r"^typedef[^\n]*\b" + name + r"\b[^\n]*;", source, re.M)
@@ -276,7 +300,7 @@ static HRESULT WINAPI hook_DrawIndexedPrimitive(void*,DWORD,DWORD,const void*,DW
         compiler = shlex.split(os.environ.get("CC", "clang"))
         subprocess.run(compiler + ["-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
                                    "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
-                                   "-fno-omit-frame-pointer", str(harness), "-o", str(binary)], check=True)
+                                   "-fno-omit-frame-pointer", "-I", str(args.source.resolve().parent), str(harness), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
     print("PASS: actual filter scopes and DP/DIP hooks; scaler boundary and COM device are native stubs")
 

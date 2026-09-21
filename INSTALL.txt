@@ -1,10 +1,10 @@
-UI FIX 1.1.0 - Return to Morroc UI Scaling
-Updated package: 2026-09-20
+UI FIX 1.1.1 - Return to Morroc UI Scaling
+Updated package: 2026-09-21
 
 INSTALL OR UPDATE
 
-1. Download ReturntoMorrocUIScaling-1.1.0.zip from the release's Assets section:
-   https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.1.0
+1. Download ReturntoMorrocUIScaling-1.1.1.zip from the release's Assets section:
+   https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.1.1
    The automatically generated Source code downloads do not include the DLL.
 2. Close the game. Preserve any existing winmm.dll and prm-ui-fix.ini outside
    the game folder before replacing files.

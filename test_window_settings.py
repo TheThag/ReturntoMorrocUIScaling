@@ -49,6 +49,24 @@ int main(void) {
  assert(fill_rect_calls>=2);
  g_ui_settings_selected=0;ui_settings_select_row(-1);assert(g_ui_settings_selected==6);
  ui_settings_select_row(1);assert(g_ui_settings_selected==0);
+
+ /* Applying only crisp must preserve global scale and every per-type pose. */
+ for(int target=0;target<ui_settings_type_count();++target) {
+  UIWindowConfig before[UI_WINDOW_CONFIG_CAP];
+  memcpy(before,g_ui_window_configs,sizeof(before));
+  int scale=g_ui_scale_percent,keep=g_ui_keep_on_screen,enabled=g_ui_runtime_enabled;
+  g_ui_settings_target=target;ui_settings_load_target();
+  g_ui_settings_selected=5;
+  for(int toggle=0;toggle<2;++toggle) {
+   int crisp=g_ui_sharp_filter;
+   ui_settings_change_selected(1);
+   ui_settings_queue_draft(0);ui_settings_poll();ui_settings_commit();
+   assert(g_ui_sharp_filter!=crisp);
+   assert(g_ui_scale_percent==scale && g_ui_keep_on_screen==keep && g_ui_runtime_enabled==enabled);
+   assert(!memcmp(before,g_ui_window_configs,sizeof(before)));
+  }
+ }
+ puts("PASS crisp-only panel applies preserve global scale and all per-type scales/positions");
  puts("PASS per-window panel: selector, 1000% minimap/100% hotbar, independent offsets, global unchanged, save-all, row navigation and rendered panel");
 }
 '''

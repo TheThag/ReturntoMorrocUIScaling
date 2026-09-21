@@ -4,16 +4,16 @@ UI FIX enlarges the game interface while keeping clicks, dragging and tooltips
 aligned with their windows. It includes screen fitting, corrected world input,
 actor-attached labels, minimap support and an in-game settings overlay.
 
-Release **1.1.0** adds independent scaling and positioning per window type,
-with global and per-window scales up to **1000%**. It also fixes hotbar and buff
-cooldown placement, preserves hotbar positioning across map changes, and adds
-automatic diagnostic captures. These changes were confirmed in-game on Linux/Wine.
+Release **1.1.1** fixes diagonal seams and uneven internal lines when crisp
+filtering is enabled, without moving windows or changing mouse alignment.
+The fix was confirmed in-game on Linux/Wine, including at approximately 400%.
+Per-window scaling and positioning up to 1000% remain available.
 Windows remains untested.
 
 ## Download and install
 
-Download **ReturntoMorrocUIScaling-1.1.0.zip** from the
-[1.1.0 release](https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.1.0).
+Download **ReturntoMorrocUIScaling-1.1.1.zip** from the
+[1.1.1 release](https://github.com/TheThag/ReturntoMorrocUIScaling/releases/tag/v1.1.1).
 The repository contains source code; compiled DLLs are distributed as release assets.
 
 1. Download the ZIP under **Assets**, then close the game. Preserve any existing

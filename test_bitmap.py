@@ -364,6 +364,18 @@ static void prepare_gates_and_popup(void) {
     CHECK(g_owner_bitmap_scope.ax==450 && g_owner_bitmap_scope.ay==310);
     CHECK(!states[2].last_input_order); /* Visual hover popup does not take input. */
 }
+static void native_percent_filter_eligibility(void) {
+    Quad a,out;
+    reset(); g_ui_scale_percent=100;
+    CHECK(owner_bitmap_prepare(1,10,20,100,100));
+    quad(&a,10,20,100,100); tag(&a);
+    CHECK(g_owner_bitmap_scope.fit_scale==1.0f);
+    CHECK(scale(&a,&out,0)==&out);
+    CHECK(!memcmp(&a,&out,sizeof(a)));
+    /* Draw hooks use pointer inequality to select crisp filtering, even when
+       the copied geometry/UVs are byte-identical at native size. */
+    puts("PASS diagnostic: 100% identity draw returns copied vertices and remains crisp-eligible");
+}
 static void scaler_integration(void) {
     Quad a,out; float ax,ay; DWORD offscreen[]={PRM_OFFSCREEN_DP_RETURN_RVA,PRM_OFFSCREEN_DIP_RETURN_RVA},i;
     reset(); CHECK(owner_bitmap_prepare(1,10,20,100,100)); quad(&a,10,20,100,100);
@@ -721,7 +733,7 @@ int main(void) {
     test_hotbar_recreation();
     split_tiles(); offscreen_tiles(); overlap_and_identity(); fingerprint_and_reuse();
     lifetime(); bounded_collisions(); full_capacity(); prepare_gates_and_popup();
-    scaler_integration(); unowned_world_draws(); npc_world_labels(); actor_speech_top_center(); chat_room_titles(); hover_names(); scope_wrapper(); presentation_activity();
+    native_percent_filter_eligibility(); scaler_integration(); unowned_world_draws(); npc_world_labels(); actor_speech_top_center(); chat_room_titles(); hover_names(); scope_wrapper(); presentation_activity();
     puts("PASS bitmap ownership: frozen tile transforms, offscreen edges, overlap, identity, 24 immutable fields, colors, reuse, expiry, wrap, bounded collisions, capacity, preparation, disabled scaling, native-size provenance, offscreen bypass, legacy isolation, NPC enlargement at moving attachment and tiled labels, actor-speech top-center attachment, chat-room body/tail attachment and input ownership, normal/vertical hover-name centers and passive input, scope restoration, presentation activity");
     return 0;
 }
